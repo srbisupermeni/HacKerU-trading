@@ -31,7 +31,3 @@ def get_15m_cvd(symbol):
     
     return buy_vol, sell_vol
 
-# --- RUN IT ---
-buy, sell = get_15m_cvd("AVAXUSDT")
-print(f"15m Buy Vol: {buy:.2f} | 15m Sell Vol: {sell:.2f}")
-print(f"CVD (Net Flow): {(buy - sell):.2f}")
