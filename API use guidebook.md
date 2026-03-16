@@ -39,6 +39,31 @@ Optional:
 - Signal reason
 - Strategy state
 
+- ### Q37. What’s best practice for repository management?
+
+Recommended structure:
+
+```
+bot/
+  strategy/
+  execution/
+  data/
+  config/
+  logs/
+tests/
+requirements.txt
+Dockerfile
+README.md
+```
+
+Best practices:
+
+- Use `.env` for API keys
+- Add clear README
+- Use Git branches (main/dev)
+- Tag final submission version
+- Keep it reproducible
+
 ### Q41. What should be included in the README file of repository?
 
 Ans: Your README should clearly explain how your bot works and how to run it. Judges should be able to understand and reproduce your project easily.
