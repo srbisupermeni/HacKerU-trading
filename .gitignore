@@ -3,3 +3,5 @@
 */raw_data/**
 */processed_data/**
 *.csv
+#防止api泄露
+roostoo.yaml
