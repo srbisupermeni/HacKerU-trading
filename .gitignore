@@ -1,0 +1,2 @@
+# Ignore the raw_data directory, which contains large CSV files of historical data that we don't want to track in version control.
+.raw_data/**
