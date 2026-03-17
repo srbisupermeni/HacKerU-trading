@@ -1,8 +1,15 @@
 import requests
+import os
+import sys
+
+root_dir = os.path.dirname(os.path.abspath(__file__))
+sys.path.append(root_dir)
+
+from database.Binance_Vision_fetcher import VisionFetcher
 
 def get_current_price(symbol):
-    url = "https://api.binance.com/api/v3/ticker/price"
-    params = {'symbol': symbol}
+    fetcher = VisionFetcher()
+    
     
     response = requests.get(url, params=params)
     data = response.json()

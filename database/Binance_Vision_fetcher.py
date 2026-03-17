@@ -16,7 +16,13 @@ processed data: ['open_time', 'open', 'high', 'low', 'close', 'volume',
 'return_rate', 'log_return', 'volatility_20', 'momentum_10', 'sma_20', 'ema_20', 'bb_upper', 'bb_lower', 'rsi_14', 'macd', 'macd_signal'] 16columns
 
 【使用方法 2：在其他代码中复用】
-from Vision_fetcher import VisionFetcher
+import os
+import sys
+
+root_dir = os.path.dirname(os.path.abspath(__file__))
+sys.path.append(root_dir)
+
+from database.Binance_Vision_fetcher import VisionFetcher
 
 # 1. 初始化实例
 fetcher = VisionFetcher()

@@ -3,9 +3,30 @@ import time
 import hmac
 import hashlib
 
+"""
+Sample output from running this test script:
+可用来暂时参考，稍后会重构为Class
+--- Checking Server Time ---
+{'ServerTime': 1773764301077}
+
+--- Getting Exchange Info ---
+Available Pairs: ['OPEN/USD', 'TRUMP/USD', 'TON/USD', 'S/USD', 'SOL/USD', 'OMNI/USD', 'CAKE/USD', 'ARB/USD', 'AVNT/USD', 'PAXG/USD', 'EDEN/USD', 'HEMI/USD', 'FET/USD', 'LINK/USD', 'FORM/USD', 'FLOKI/USD', 'BONK/USD', 'FIL/USD', 'BTC/USD', 'TAO/USD', 'UNI/USD', 'PEPE/USD', 'PUMP/USD', 'HBAR/USD', 'XRP/USD', 'AAVE/USD', 'WLFI/USD', 'EIGEN/USD', 'LINEA/USD', '1000CHEEMS/USD', 'BIO/USD', 'LISTA/USD', 'AVAX/USD', 'MIRA/USD', 'XLM/USD', 'SUI/USD', 'NEAR/USD', 'SEI/USD', 'PENGU/USD', 'ETH/USD', 'PENDLE/USD', 'PLUME/USD', 'WIF/USD', 'ICP/USD', 'BNB/USD', 'VIRTUAL/USD', 'APT/USD', 'SHIB/USD', 'POL/USD', 'ZEC/USD', 'DOGE/USD', 'CRV/USD', 'ASTER/USD', 'TRX/USD', 'BMT/USD', 'ZEN/USD', 'ONDO/USD', 'LTC/USD', 'STO/USD', 'SOMI/USD', 'WLD/USD', 'XPL/USD', 'CFX/USD', 'DOT/USD', 'TUT/USD', 'ADA/USD', 'ENA/USD']
+
+--- Getting Market Ticker (BTC/USD) ---
+{'MaxBid': 74137.86, 'MinAsk': 74137.87, 'LastPrice': 74137.87, 'Change': 0.0092, 'CoinTradeValue': 27340.12305, 'UnitTradeValue': 2034368085.2932057}
+
+--- Getting Account Balance ---
+{'Success': True, 'ErrMsg': '', 'SpotWallet': {'USD': {'Free': 50000, 'Lock': 0}}, 'MarginWallet': {}}
+
+--- Checking Pending Orders ---
+{'Success': False, 'ErrMsg': 'no pending order under this account', 'TotalPending': 0, 'OrderPairs': {}}
+{'Success': True, 'ErrMsg': '', 'OrderDetail': {'Pair': 'BNB/USD', 'OrderID': 2761589, 'Status': 'FILLED', 'Role': 'TAKER', 'ServerTimeUsage': 0.004918678, 'CreateTimestamp': 1773764308244, 'FinishTimestamp': 1773764308249, 'Side': 'BUY', 'Type': 'MARKET', 'StopType': 'GTC', 'Price': 669.69, 'Quantity': 1, 'FilledQuantity': 1, 'FilledAverPrice': 669.69, 'CoinChange': 1, 'UnitChange': 669.69, 'CommissionCoin': 'USD', 'CommissionChargeValue': 0.66969, 'CommissionPercent': 0.001, 'OrderWalletType': 'SPOT', 'OrderSource': 'PUBLIC_API'}}
+{'Success': True, 'ErrMsg': '', 'OrderDetail': {'Pair': 'BNB/USD', 'OrderID': 2761590, 'Status': 'FILLED', 'Role': 'TAKER', 'ServerTimeUsage': 0.003799002, 'CreateTimestamp': 1773764309610, 'FinishTimestamp': 1773764309614, 'Side': 'SELL', 'Type': 'MARKET', 'StopType': 'GTC', 'Price': 669.68, 'Quantity': 1, 'FilledQuantity': 1, 'FilledAverPrice': 669.68, 'CoinChange': 1, 'UnitChange': 669.68, 'CommissionCoin': 'USD', 'CommissionChargeValue': 0.66968, 'CommissionPercent': 0.001, 'OrderWalletType': 'SPOT', 'OrderSource': 'PUBLIC_API'}}
+{'Success': True, 'ErrMsg': '', 'OrderMatched': [{'Pair': 'BNB/USD', 'OrderID': 2761590, 'Status': 'FILLED', 'Role': 'TAKER', 'ServerTimeUsage': 0.003799002, 'CreateTimestamp': 1773764309610, 'FinishTimestamp': 1773764309614, 'Side': 'SELL', 'Type': 'MARKET', 'StopType': 'GTC', 'Price': 669.68, 'Quantity': 1, 'FilledQuantity': 1, 'FilledAverPrice': 669.68, 'CoinChange': 1, 'UnitChange': 669.68, 'CommissionCoin': 'USD', 'CommissionChargeValue': 0.66968, 'CommissionPercent': 0.001, 'OrderWalletType': 'SPOT', 'OrderSource': 'PUBLIC_API'}, {'Pair': 'BNB/USD', 'OrderID': 2761589, 'Status': 'FILLED', 'Role': 'TAKER', 'ServerTimeUsage': 0.004918678, 'CreateTimestamp': 1773764308244, 'FinishTimestamp': 1773764308249, 'Side': 'BUY', 'Type': 'MARKET', 'StopType': 'GTC', 'Price': 669.69, 'Quantity': 1, 'FilledQuantity': 1, 'FilledAverPrice': 669.69, 'CoinChange': 1, 'UnitChange': 669.69, 'CommissionCoin': 'USD', 'CommissionChargeValue': 0.66969, 'CommissionPercent': 0.001, 'OrderWalletType': 'SPOT', 'OrderSource': 'PUBLIC_API'}]}"""
+
 # --- API Configuration ---
 BASE_URL = "https://mock-api.roostoo.com"
-API_KEY = "l5zxW7pvWVSsyIOwu6rgovXKgcDGZDpr8RMfKTazfUnKsMthXhfMPEJHk5Q7IKjW"      # Replace with your actual API key
+API_KEY = "XWox7FVBCwEtiO9AcWASMtAnw1iYP5xwb28E0QzL2KajzFO4HOxwuLO0k1uSIVII"      # Replace with your actual API key
 SECRET_KEY = "IB8JB6lmGWZh9nTwh9Wo1u9MwIbjv5eK9R0QRPM5iQTdHR9exESHY8VHAdNWRdEY"  # Replace with your actual secret key
 
 
