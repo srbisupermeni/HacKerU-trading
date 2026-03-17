@@ -253,7 +253,7 @@ if __name__ == "__main__":
     fetcher.get_and_save_range(
         symbol="BTCUSDT", interval="1h", 
         start_year=2024, start_month=1, 
-        end_year=2024, end_month=2
+        end_year=2025, end_month=2
     )
     
     # 测试 2: 检查文件夹内容
