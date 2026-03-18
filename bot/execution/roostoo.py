@@ -39,6 +39,7 @@ from collections import deque
     btc_ticker = client.get_ticker("BTC/USD")
     print("BTC 行情:", btc_ticker)
     return {'MaxBid': 74225.44, 'MinAsk': 74225.45, 'LastPrice': 74225.45, 'Change': 0.0051, 'CoinTradeValue': 27150.10254, 'UnitTradeValue': 2020685652.110588}
+    MaxBid: 最高买价； MinAsk: 最低卖价; LastPrice: 最新成交价; Change: 24小时价格变动率; CoinTradeValue: 24小时成交量（以交易对基础货币计）；UnitTradeValue: 24小时成交额(USD)
 
     # 3. 调用需签名的私有接口 (例如查询余额)
     my_balance = client.get_balance()
