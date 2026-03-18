@@ -7,3 +7,5 @@
 roostoo.yaml
 
 __pycache__
+
+.vscode/**
