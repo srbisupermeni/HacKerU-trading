@@ -1,8 +1,8 @@
 """
-
+=============================================================================
 Binance Vision 数据获取工具 (Vision_fetcher.py)
 从 Binance Vision (data.binance.vision) 获取历史K线(OHLCV)数据，并自动保存为CSV文件。
-不受地区限制，适用于获取大批量的历史月度数据，用于量化策略回测。
+不受地区限制，适用于获取大批量的历史月度/日度数据，用于量化策略回测。
 
 【依赖库安装】
 请确保安装了 pandas 和 requests：
@@ -13,7 +13,7 @@ pip install pandas requests
 创建 `database/raw_data` 和 `database/processed_data` 文件夹，并下载测试数据。
 raw data: ['open_time', 'open', 'high', 'low', 'close', 'volume'] 6columns
 processed data: ['open_time', 'open', 'high', 'low', 'close', 'volume', 
-'return_rate', 'log_return', 'volatility_20', 'momentum_10', 'sma_20', 'ema_20', 'bb_upper', 'bb_lower', 'rsi_14', 'macd', 'macd_signal'] 16columns
+'return_rate', 'log_return', 'volatility_20', 'momentum_10', 'sma_20', 'ema_20', 'bb_upper', 'bb_lower', 'rsi_14', 'macd', 'macd_signal'] 
 
 【使用方法 2：在其他代码中复用】
 import os
@@ -27,30 +27,42 @@ from database.Binance_Vision_fetcher import VisionFetcher
 # 1. 初始化实例
 fetcher = VisionFetcher()
 
-# 2. 一键获取区间数据并保存 (例如获取 BTC 2024年1月到3月的 1小时线)
+# 2. 一键获取区间数据并保存 (例如获取 BTC 2024年1月到3月的 1小时线 - 月度数据)
 file_path = fetcher.get_and_save_range(
     symbol="BTCUSDT", interval="1h", 
     start_year=2024, start_month=1, 
-    end_year=2024, end_month=3
+    end_year=2024, end_month=3,
+    data_type="monthly"
 )
+
+# 2.1 一键获取区间数据并保存 (例如获取 BTC 2025年1月1日到3日的 1小时线 - 日度数据)
+file_path = fetcher.get_and_save_range(
+    symbol="BTCUSDT", interval="1h", 
+    start_year=2025, start_month=1, start_day=1,
+    end_year=2025, end_month=1, end_day=3,
+    data_type="daily"
+)
+daily和monthly的区别在于，前者会下载每天的数据文件（如果存在），后者会下载每月的数据文件（如果存在）。请根据需要选择。
 
 # 3. 仅获取 Pandas DataFrame
 df = fetcher.fetch_klines_range(
     symbol="ETHUSDT", interval="15m", 
-    start_year=2024, start_month=1, end_year=2024, end_month=2
+    start_year=2024, start_month=1, end_year=2024, end_month=2,
+    data_type="monthly"
 )
-# 4. 获取单月数据
+
+# 4. 获取单月或单日数据
 df = fetcher.fetch_klines_from_vision(
     symbol="ETHUSDT", interval="15m",
-    year=2024, month=1
+    year=2024, month=1, day=1, data_type="daily"
 )
 
 3,4 为raw_data, 包含6列: ['open_time', 'open', 'high', 'low', 'close', 'volume']
 
 # 5. 添加技术指标   
 df_with_indicators = fetcher._add_technical_indicators(df)
-# 为processed_data, 包含16列: ['open_time', 'open', 'high', 'low', 'close', 'volume', 
-# 'return_rate', 'log_return', 'volatility_20', 'momentum_  10', 'sma_20', 'ema_20', 'bb_upper', 'bb_lower', 'rsi_14', 'macd', 'macd_signal']
+# 为processed_data, 包含17列: ['open_time', 'open', 'high', 'low', 'close', 'volume', 
+# 'return_rate', 'log_return', 'volatility_20', 'momentum_10', 'sma_20', 'ema_20', 'bb_upper', 'bb_lower', 'rsi_14', 'macd', 'macd_signal']
 
 =============================================================================
 """
@@ -61,6 +73,7 @@ import pandas as pd
 import os
 import zipfile
 import io
+from datetime import date, timedelta
 
 class VisionFetcher:
     def __init__(self):
@@ -133,16 +146,20 @@ class VisionFetcher:
         
         return df
 
-    def fetch_klines_from_vision(self, symbol="BTCUSDT", interval="1h", year=2025, month=1, data_type="monthly"):
+    def fetch_klines_from_vision(self, symbol="BTCUSDT", interval="1h", year=2025, month=1, day=1, data_type="monthly"):
         """
-        从 data.binance.vision 下载历史K线数据（不受地区限制）
+        从 data.binance.vision 下载历史K线数据（不受地区限制，支持日度/月度）
         """
         if data_type == "monthly":
             filename = f"{symbol.upper()}-{interval}-{year}-{month:02d}.zip"
             url = (f"https://data.binance.vision/data/spot/monthly/klines/"
                    f"{symbol.upper()}/{interval}/{filename}")
+        elif data_type == "daily":
+            filename = f"{symbol.upper()}-{interval}-{year}-{month:02d}-{day:02d}.zip"
+            url = (f"https://data.binance.vision/data/spot/daily/klines/"
+                   f"{symbol.upper()}/{interval}/{filename}")
         else:
-            raise ValueError("data_type 暂只支持 monthly")
+            raise ValueError("data_type 仅支持 'monthly' 或 'daily'")
 
         print(f"downloading from binance vision: {url}")
         
@@ -150,7 +167,7 @@ class VisionFetcher:
             response = requests.get(url, timeout=30)
             response.raise_for_status()
         except requests.exceptions.RequestException as e:
-            print(f"下载失败: {e}")
+            print(f"下载失败 (可能是数据尚未生成或日期错误): {e}")
             return None
 
         # 解压 zip，读取 CSV
@@ -183,24 +200,43 @@ class VisionFetcher:
         return df
 
     def fetch_klines_range(self, symbol="BTCUSDT", interval="1h",
-                           start_year=2025, start_month=1,
-                           end_year=2025, end_month=3):
+                           start_year=2025, start_month=1, start_day=1,
+                           end_year=2025, end_month=3, end_day=1,
+                           data_type="monthly"):
         """
-        获取多个月份的数据并拼接
+        获取多个月份或天数的数据并拼接
         """
         all_dfs = []
         
-        year, month = start_year, start_month
-        while (year, month) <= (end_year, end_month):
-            df = self.fetch_klines_from_vision(symbol, interval, year, month)
-            if df is not None:
-                all_dfs.append(df)
-            # 下一个月
-            if month == 12:
-                year += 1
-                month = 1
-            else:
-                month += 1
+        if data_type == "monthly":
+            year, month = start_year, start_month
+            while (year, month) <= (end_year, end_month):
+                df = self.fetch_klines_from_vision(symbol, interval, year=year, month=month, data_type="monthly")
+                if df is not None:
+                    all_dfs.append(df)
+                # 下一个月
+                if month == 12:
+                    year += 1
+                    month = 1
+                else:
+                    month += 1
+        
+        elif data_type == "daily":
+            current_date = date(start_year, start_month, start_day)
+            end_date = date(end_year, end_month, end_day)
+            
+            while current_date <= end_date:
+                df = self.fetch_klines_from_vision(
+                    symbol, interval, 
+                    year=current_date.year, 
+                    month=current_date.month, 
+                    day=current_date.day, 
+                    data_type="daily"
+                )
+                if df is not None:
+                    all_dfs.append(df)
+                # 下一天
+                current_date += timedelta(days=1)
 
         if not all_dfs:
             return None
@@ -211,12 +247,13 @@ class VisionFetcher:
         return result
 
     def get_and_save_range(self, symbol="BTCUSDT", interval="1h",
-                           start_year=2025, start_month=1,
-                           end_year=2025, end_month=3):
+                           start_year=2025, start_month=1, start_day=1,
+                           end_year=2025, end_month=3, end_day=1,
+                           data_type="monthly"):
         """
-        核心方法：获取多月拼接数据并自动保存为 CSV，同时生成带有技术指标的版本
+        核心方法：获取多月/多天拼接数据并自动保存为 CSV，同时生成带有技术指标的版本
         """
-        df = self.fetch_klines_range(symbol, interval, start_year, start_month, end_year, end_month)
+        df = self.fetch_klines_range(symbol, interval, start_year, start_month, start_day, end_year, end_month, end_day, data_type)
         
         if df is None or df.empty:
             print(f"failed to fetch data for {symbol}, skipping save.")
@@ -225,8 +262,12 @@ class VisionFetcher:
         # 确保 raw_data 文件夹存在
         os.makedirs(self.raw_save_folder, exist_ok=True)
         
-        # 构建文件路径 (例如: raw_data/BTCUSDT_1h_202401_202403.csv)
-        file_suffix = f"{start_year}{start_month:02d}_{end_year}{end_month:02d}"
+        # 构建文件路径 (动态判断根据月还是日生成后缀名)
+        if data_type == "monthly":
+            file_suffix = f"{start_year}{start_month:02d}_{end_year}{end_month:02d}"
+        else:
+            file_suffix = f"{start_year}{start_month:02d}{start_day:02d}_{end_year}{end_month:02d}{end_day:02d}"
+            
         file_name = f"{symbol.upper()}_{interval}_{file_suffix}.csv"
         file_path = os.path.join(self.raw_save_folder, file_name)
         
@@ -254,12 +295,13 @@ if __name__ == "__main__":
     
     print("testing VisionFetcher\n")
     
-    # 测试 1: 获取比特币 1小时级别 2024年1月-2024年2月 的数据
-    print("Test 1: Fetching BTCUSDT 1h data (2024.01 - 2024.02)...")
+    # 测试 1: 获取 BTCUSDT 1分钟线数据 (为了快速演示，我们测试使用 monthly，您可以修改为 daily 测试)
+    print("Test 1: Fetching BTCUSDT ")
     fetcher.get_and_save_range(
-        symbol="BTCUSDT", interval="1h", 
-        start_year=2024, start_month=1, 
-        end_year=2025, end_month=2
+        symbol="BTCUSDT", interval="1d", 
+        start_year=2026, start_month=2, start_day=1,
+        end_year=2026, end_month=3, end_day=1,
+        data_type="monthly" # 若要精确按天下载，将此改为 "daily" 即可
     )
     
     # 测试 2: 检查文件夹内容
@@ -276,9 +318,10 @@ if __name__ == "__main__":
     # 测试 3: 展示获取的 DataFrame 数据
     print("\nTest 3: Showing top and bottom rows for fetched data...")
     df_btc = fetcher.fetch_klines_range(
-        symbol="BTCUSDT", interval="1h", 
-        start_year=2024, start_month=1, 
-        end_year=2024, end_month=1
+        symbol="BTCUSDT", interval="1m", 
+        start_year=2026, start_month=2, start_day=1,
+        end_year=2026, end_month=3, end_day=1,
+        data_type="monthly" # 同上，如需按天下载改为 "daily"
     )
     fetcher.show_data(df_btc, num_rows=3)
     print([col for col in df_btc.columns])
@@ -286,3 +329,9 @@ if __name__ == "__main__":
     df_btc_indicators = fetcher._add_technical_indicators(df_btc)
     fetcher.show_data(df_btc_indicators, num_rows=3)
     print([col for col in df_btc_indicators.columns])
+
+    df_day = fetcher.fetch_klines_from_vision(
+    symbol="ETHUSDT", interval="1h",
+    year=2026, month=3, day=17, data_type="daily"
+)
+    fetcher.show_data(df_day, num_rows=3)

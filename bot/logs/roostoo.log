@@ -18,3 +18,13 @@
 2026-03-18 01:50:29,465 - INFO - 当前账户余额: {'Success': True, 'ErrMsg': '', 'SpotWallet': {'BNB': {'Free': 0, 'Lock': 0}, 'USD': {'Free': 49998.65, 'Lock': 0}}, 'MarginWallet': {}}
 2026-03-18 01:50:30,800 - INFO - executed: [GET] https://mock-api.roostoo.com/v3/ticker
 2026-03-18 01:50:30,801 - INFO - BTC最新价格: 74525.01
+2026-03-18 01:52:55,593 - INFO - Roostoo API logs initialized in: D:\商赛\SG vs HK\HacKerU-trading\bot\logs
+2026-03-18 01:52:57,430 - INFO - executed: [GET] https://mock-api.roostoo.com/v3/serverTime
+2026-03-18 01:52:58,755 - INFO - executed: [GET] https://mock-api.roostoo.com/v3/exchangeInfo
+2026-03-18 01:53:00,071 - INFO - executed: [GET] https://mock-api.roostoo.com/v3/ticker
+2026-03-18 01:53:01,730 - INFO - executed: [GET] https://mock-api.roostoo.com/v3/balance
+2026-03-18 01:53:01,731 - INFO - demo execution
+2026-03-18 01:53:03,059 - INFO - executed: [GET] https://mock-api.roostoo.com/v3/balance
+2026-03-18 01:53:03,060 - INFO - balance: {'Success': True, 'ErrMsg': '', 'SpotWallet': {'BNB': {'Free': 0, 'Lock': 0}, 'USD': {'Free': 49998.65, 'Lock': 0}}, 'MarginWallet': {}}
+2026-03-18 01:53:04,374 - INFO - executed: [GET] https://mock-api.roostoo.com/v3/ticker
+2026-03-18 01:53:04,375 - INFO - BTC real time price: 74563.12
