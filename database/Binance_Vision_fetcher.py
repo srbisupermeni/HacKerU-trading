@@ -11,7 +11,7 @@ pip install pandas requests
 【使用方法 1：直接运行】
 直接运行此脚本，会自动在当前目录下（或往上寻找 requirements.txt 所在的根目录）
 创建 `database/raw_data` 和 `database/processed_data` 文件夹，并下载测试数据。
-raw data: ['open_time', 'open', 'high', 'low', 'close', 'volume'] 6columns
+raw data: ['open_time', 'open', 'high', 'low', 'close', 'volume', 'buy_volume', 'sell_volume'] 8columns
 processed data: ['open_time', 'open', 'high', 'low', 'close', 'volume', 
 'return_rate', 'log_return', 'volatility_20', 'momentum_10', 'sma_20', 'ema_20', 'bb_upper', 'bb_lower', 'rsi_14', 'macd', 'macd_signal'] 
 
@@ -148,7 +148,7 @@ class VisionFetcher:
 
     def fetch_klines_from_vision(self, symbol="BTCUSDT", interval="1h", year=2025, month=1, day=1, data_type="monthly"):
         """
-        从 data.binance.vision 下载历史K线数据（不受地区限制，支持日度/月度）
+        从 data.binance.vision 下载历史K线数据
         """
         if data_type == "monthly":
             filename = f"{symbol.upper()}-{interval}-{year}-{month:02d}.zip"
@@ -167,7 +167,7 @@ class VisionFetcher:
             response = requests.get(url, timeout=30)
             response.raise_for_status()
         except requests.exceptions.RequestException as e:
-            print(f"下载失败 (可能是数据尚未生成或日期错误): {e}")
+            print(f"failed to download data: {e}")
             return None
 
         # 解压 zip，读取 CSV
@@ -191,12 +191,15 @@ class VisionFetcher:
             df['open_time'] = pd.to_datetime(df['open_time'], unit='ms')
             df['close_time'] = pd.to_datetime(df['close_time'], unit='ms')
 
-        numeric_columns = ['open', 'high', 'low', 'close', 'volume']
+        numeric_columns = ['open', 'high', 'low', 'close', 'volume', 'taker_buy_base_asset_volume']
         for col in numeric_columns:
             df[col] = df[col].astype(float)
 
-        df = df[['open_time', 'open', 'high', 'low', 'close', 'volume']]
-        print(f"成功获取 {len(df)} 条数据")
+        df['buy_volume'] = df['taker_buy_base_asset_volume']
+        df['sell_volume'] = df['volume'] - df['taker_buy_base_asset_volume']
+
+        df = df[['open_time', 'open', 'high', 'low', 'close', 'volume', 'buy_volume', 'sell_volume']]
+        print(f"fetched {len(df)} rows of data")
         return df
 
     def fetch_klines_range(self, symbol="BTCUSDT", interval="1h",
@@ -243,7 +246,7 @@ class VisionFetcher:
         
         result = pd.concat(all_dfs, ignore_index=True)
         result = result.drop_duplicates(subset=['open_time']).sort_values('open_time')
-        print(f"合并完成，共 {len(result)} 条数据")
+        print(f"fetched {len(result)} rows of data")
         return result
 
     def get_and_save_range(self, symbol="BTCUSDT", interval="1h",

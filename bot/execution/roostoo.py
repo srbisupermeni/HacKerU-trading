@@ -23,8 +23,8 @@ from collections import deque
     2. 准备好配置文件，默认路径为 `config/roostoo.yaml`。文件结构如下：
         roostoo:
           base_url: "https://mock-api.roostoo.com"
-          api_key: "你的_API_KEY"
-          secret_key: "你的_SECRET_KEY"
+          api_key: "API_KEY"
+          secret_key: "SECRET_KEY"
 
     【在其他文件中的使用示例】
     --------------------------------------------------
