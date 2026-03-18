@@ -33,3 +33,5 @@ current_rsi = recent_df['RSI_7'].iloc[-1]
 
 if OBI>0.75 & current_rsi<60 :
     print('Buy')
+else:
+    print('oh no')
