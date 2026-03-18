@@ -61,7 +61,7 @@ while True:
 
         current_rsi = recent_df['RSI'].iloc[-1]
 
-        if  Holding:
+        if  not Holding:
             if (OBI>0.75) and (current_rsi<60) :
                     signal = 'Buy'
                     print(signal)
