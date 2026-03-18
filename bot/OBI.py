@@ -15,7 +15,7 @@ sys.path.append(str(database_dir))
 from Binance_fetcher import BinanceDataFetcher
 import numpy as np
 import pandas as pd
-import pandas_ta as ta
+
 import time
 
 Holding = False
@@ -28,8 +28,7 @@ mean_Sell = recent_df['sell_volume'].mean()
 
 OBI = (mean_Buy - mean_Sell)/(mean_Buy + mean_Sell)
 
-recent_df['RSI_7'] = ta.rsi(recent_df['close'], length=7)
-current_rsi = recent_df['RSI_7'].iloc[-1]
+
 
 if OBI>0.75 & current_rsi<60 :
     print('Buy')
