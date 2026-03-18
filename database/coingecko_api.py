@@ -4,9 +4,60 @@ from collections import deque
 
 class CoinGeckoClient:
     """
-    CoinGecko 免费版 API 
-    获取今日（24小时内）的详细行情数据、盘口深度及日内走势。
-    包含全局请求限速 (15次/分)，防止触发 API 封禁。
+    ===========================================================================
+    CoinGecko 免费版 API 客户端 - 使用教程与集成指南
+    ===========================================================================
+    
+    【核心功能】
+    专为量化策略设计，无需 API Key，专注于获取今日（过去24小时内）的详细行情数据、盘口深度及日内时间序列走势。
+    
+    【内置保护】
+    包含全局请求限速 (15次/分)。CoinGecko 免费版对频繁请求极为敏感，本客户端底层会自动计算请求频率，濒临阈值时会自动触发 `time.sleep()` 保护，防止你的 AWS 
+    或本地 IP 被永久封禁。
+    
+    【重要避坑指北：币种 ID 命名规则】
+    CoinGecko 不认识 "BTC" 或 "ETH" 这种简写符号 (Symbol)！
+    调用时必须传入全小写的完整英文名称 (Coin ID)：
+        - BTC/USD -> "bitcoin"
+        - ETH/USD -> "ethereum"
+        - BNB/USD -> "binancecoin"
+        - SOL/USD -> "solana"
+    
+    【核心方法调用指南】
+    
+    1. get_today_overview(coin_ids, vs_currencies)
+       - 用途：极速获取实时基础数据（最新价、24h交易量、24h涨跌幅）。
+       - 场景：策略启动时的状态检查，或每小时的定时播报。
+       - 示例：client.get_today_overview(coin_ids="bitcoin,ethereum")
+       
+    2. get_today_intraday_data(coin_id, vs_currency)
+       - 用途：获取过去24小时的日内走势流。
+       - 返回：包含 'prices' 和 'total_volumes' 的字典。'prices' 是一个巨大
+               的二维数组 `[[时间戳, 价格], [时间戳, 价格]...]`，约288个数据点
+               （每5分钟一次更新）。
+       - 场景：丢进 Pandas 计算短线 MA均线、RSI 动量等日内技术指标。
+       
+    3. get_market_depth(coin_id)
+       - 用途：获取微观多空力量（±2% 盘口深度资金量）。
+       - 返回：全网各大交易所该币种的 Order Book 厚度。
+       - 场景：通过对比 `cost_to_move_up_usd` (砸穿上方卖单需要的资金) 和 
+               `cost_to_move_down_usd` (砸穿下方买单需要的资金)，判断短期内
+               庄家/散户的支撑抛压力量。
+               
+    【在主程序中的快速集成示例】
+    ---------------------------------------------------------------------------
+    from coingecko_api import CoinGeckoClient
+    
+    cg = CoinGeckoClient()
+    
+    # 拿到 BTC 最新走势
+    data = cg.get_today_intraday_data("bitcoin")
+    if data:
+        # 提取所有价格形成一维列表
+        price_list = [point[1] for point in data['prices']]
+        current_price = price_list[-1]
+        print(f"当前价格: {current_price}")
+    ---------------------------------------------------------------------------
     """
     
     def __init__(self):

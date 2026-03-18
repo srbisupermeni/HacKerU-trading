@@ -5,3 +5,5 @@
 *.csv
 #防止api泄露
 roostoo.yaml
+
+__pycache__
