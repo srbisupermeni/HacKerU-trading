@@ -75,6 +75,7 @@ class Roostoo:
 
         self.request_times = deque(maxlen=30)
         self.last_order_time = 0.0
+        self.request_timeout = 5
 
         self._load_config(config_path)
     
@@ -147,15 +148,19 @@ class Roostoo:
         # 记录本次请求的时间戳
         self.request_times.append(time.time())
 
+    def _enforce_order_rate_limit(self):
+        """兼容旧调用：订单请求复用全局限速规则。"""
+        self._enforce_global_rate_limit()
+
     def _make_request(self, method, url, headers=None, params=None, data=None):
         """统一的网络请求封装，自动处理全局限速和异常拦截"""
         self._enforce_global_rate_limit()
         
         try:
             if method.upper() == 'GET':
-                res = requests.get(url, headers=headers, params=params)
+                res = requests.get(url, headers=headers, params=params, timeout=self.request_timeout)
             else:
-                res = requests.post(url, headers=headers, data=data)
+                res = requests.post(url, headers=headers, data=data, timeout=self.request_timeout)
                 
             res.raise_for_status()
             response_data = res.json()
