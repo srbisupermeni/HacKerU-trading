@@ -20,8 +20,7 @@ def prepare_data(symbol="BTCUSDT", interval="15m"):
     print(f"1. 正在从 Binance Vision 下载 {symbol} ({interval}) 的历史月度数据...")
     
     fetcher = VisionFetcher()
-    
-    # 获取 2023年7月 到 2024年2月（共8个月）的数据，数据量足够大且包含牛熊转换
+    # 获取 2025 年全年的月度数据 (共 12 条)，覆盖牛熊转换的周期
     raw_df = fetcher.fetch_klines_range(
         symbol=symbol, 
         interval=interval, 
@@ -85,7 +84,7 @@ def main():
         batch_size=64,             # 批次大小
         n_epochs=10,               # 每次收集数据后优化网络的轮数
         gamma=0.99,                # 折扣因子 (更看重长期收益)
-        ent_coef=0.01,             # 熵系数 (稍微大一点，鼓励模型多尝试不同的仓位，避免陷入全空仓的局部最优)
+        ent_coef=0.05,             # 熵系数 (稍微大一点，鼓励模型多尝试不同的仓位，避免陷入全空仓的局部最优)
         clip_range=0.2,            # PPO 核心裁剪比例
         tensorboard_log="./tensorboard_logs/",
         verbose=1
@@ -93,7 +92,7 @@ def main():
 
     # 5. 开始训练
     print("\n4. 开始训练 (这可能需要几分钟到十几分钟的时间)...")
-    TOTAL_TIMESTEPS = 100_000  # 训练总步数，可以根据电脑算力调整
+    TOTAL_TIMESTEPS = 200_000  # 训练总步数，可以根据电脑算力调整
     
     model.learn(
         total_timesteps=TOTAL_TIMESTEPS, 

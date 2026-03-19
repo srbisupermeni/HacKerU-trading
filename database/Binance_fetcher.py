@@ -98,7 +98,7 @@ class BinanceDataFetcher:
     def fetch_recent_klines(self, symbol="BTCUSDT", interval="1m", limit=100):
         """
         获取当前时刻往前推的最新 K 线数据 (包含 buy_volume 和 sell_volume)
-        :param limit: 获取的数据条数（最高 1000 条）
+        :param limit: 获取的数据条数（最高 2000 条）
         """
         print(f"Fetching recent {limit} candles for {symbol} ({interval}) via SDK...")
         
