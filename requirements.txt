@@ -13,3 +13,8 @@ xgboost>=3.2.0
 
 # Data Visualization
 matplotlib>=3.7.0
+
+#PPO
+stable-baselines3>=2.0.0
+gymnasium>=1.0.0
+tensorboard>=2.12.0
