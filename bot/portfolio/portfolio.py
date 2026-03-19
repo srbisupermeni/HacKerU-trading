@@ -1,17 +1,31 @@
 import threading
 import time
+import logging
 from typing import Dict, Optional
 
 
 class Portfolio:
     """
-    Portfolio 类负责管理机器人交易的所有资产。
-    职责：
-        - 跟踪每个币种的持仓
-        - 存储每个币种的止损 / 止盈参数
-        - 防止多个策略同时交易同一币种（使用锁）
-        - 可由 Roostoo 更新持仓信息
-        - 通过 Execution 模块触发止损 / 止盈
+    资产组合管理器 - 管理所有交易账户的资产状态
+    
+    核心功能：
+        1. 管理持仓（每个币种的可用/锁定金额）
+        2. 管理币种锁（防止同一币种被多个策略同时交易）
+        3. 管理策略参数（每个币种的止损/止盈设置）
+    
+    锁机制说明（应用级别）：
+        - 每个币种都有一个"锁"，防止多个策略同时下单
+        - 锁是应用级别的，安全、高效、易于恢复
+        - 线程安全：可以从任何线程释放锁
+    
+    使用示例：
+        portfolio = Portfolio(execution_module=engine)
+        if portfolio.acquire_coin('BTC', 'strategy_1'):
+            # 成功获得 BTC 的锁，可以下单
+            pass
+        else:
+            # BTC 被其他策略占用，请稍后重试
+            pass
     """
 
     def __init__(self, execution_module):
@@ -19,14 +33,17 @@ class Portfolio:
         :param execution_module: 对应的 Execution 类实例引用
         """
         self.execution = execution_module
+        self.logger = logging.getLogger('Portfolio')
 
         self.account_balance: float = 1000.0
 
         # 当前持仓：{coin: {'free': float, 'locked': float}}
         self.positions: Dict[str, Dict[str, float]] = {}
 
-        # 每个币种的锁，防止多个策略同时使用同一币种
-        self.coin_locks: Dict[str, threading.Lock] = {}
+        # 应用级锁管理：{coin: {'locked': bool, 'owner_strategy_id': str, 'acquired_at': timestamp}}
+        self.coin_ownership: Dict[str, Dict] = {}
+        # 保护 coin_ownership 字典访问的全局互斥锁
+        self._ownership_lock = threading.Lock()
 
         # 策略相关参数：{coin: {'strategy_id': str, 'stop_loss': float, 'take_profit': float}}
         self.strategy_params: Dict[str, Dict] = {}
@@ -38,12 +55,33 @@ class Portfolio:
     # ================= 持仓管理 =================
 
     def update_positions(self, new_positions: Dict[str, Dict[str, float]] = None):
-        # 更新持仓（可以被外部同步调用）
+        """
+        批量更新持仓信息（从交易所同步）
+        
+        参数：
+            new_positions: 新的持仓字典 {coin: {'free': float, 'locked': float}, ...}
+        
+        示例：
+            portfolio.update_positions({
+                'BTC': {'free': 1.5, 'locked': 0.5},
+                'ETH': {'free': 10.0, 'locked': 0.0}
+            })
+        """
         self.positions = new_positions or self.positions
 
     def get_position(self, coin: str) -> Dict[str, float]:
         """
-        返回指定币种的当前持仓
+        获取指定币种的当前持仓
+        
+        参数：
+            coin: 币种代码，例如 'BTC'
+        
+        返回：
+            {'free': 可用数量, 'locked': 锁定数量}
+        
+        示例：
+            pos = portfolio.get_position('BTC')
+            print(f"可用 BTC: {pos['free']}, 锁定: {pos['locked']}")
         """
         return self.positions.get(coin, {"free": 0.0, "locked": 0.0})
 
@@ -51,59 +89,100 @@ class Portfolio:
 
     def acquire_coin(self, coin: str, strategy_id: str) -> bool:
         """
-        尝试为某个策略锁定币种。
-        成功返回 True，失败返回 False。
-        """
-        # 确保此币种存在 Lock 对象
-        if coin not in self.coin_locks:
-            self.coin_locks[coin] = threading.Lock()
-
-        lock = self.coin_locks[coin]
-
-        # 非阻塞地尝试获取锁
-        acquired = lock.acquire(blocking=False)
-        if not acquired:
-            return False
-
-        # 记录当前持有锁的策略（所有者信息保存在 strategy_params 中）
-        existing = self.strategy_params.get(coin, {})
-        existing['strategy_id'] = strategy_id
-        # 确保 stop_loss / take_profit 键存在（可能稍后设置）
-        existing.setdefault('stop_loss', None)
-        existing.setdefault('take_profit', None)
-        self.strategy_params[coin] = existing
-
-        return True
-
-    def release_coin(self, coin: str):
-        """
-        释放某个币种的锁
-        """
-        lock = self.coin_locks.get(coin)
-        if lock and lock.locked():
-            try:
-                lock.release()
-            except RuntimeError:
-                # 已经被释放或当前线程不是持有者，忽略
-                return
-
-        # 移除策略的所有者标记，但保留 stop_loss/take_profit（如存在）
-        if coin in self.strategy_params:
-            params = self.strategy_params.get(coin, {})
-            # 仅删除 owner 标记
-            params.pop('strategy_id', None)
-
-            # 如果 stop_loss 和 take_profit 都为空，则移除整个条目
-            if params.get('stop_loss') is None and params.get('take_profit') is None:
-                self.strategy_params.pop(coin, None)
+        获取币种的锁（防止其他策略同时交易此币种）
+        
+        非阻塞式调用 - 立即返回结果
+        
+        参数：
+            coin: 币种代码，例如 'BTC', 'ETH', 'XRP'
+            strategy_id: 策略的唯一标识，例如 'ma_crossover_1', 'rsi_strategy'
+        
+        返回：
+            True - 成功获取锁，可以下单
+            False - 币种被其他策略占用，请稍后重试
+        
+        示例：
+            if portfolio.acquire_coin('BTC', 'my_strategy'):
+                print("成功获取 BTC 的锁")
+                # 继续下单...
             else:
-                self.strategy_params[coin] = params
+                print("BTC 被其他策略占用，请稍后重试")
+        """
+        with self._ownership_lock:
+            ownership = self.coin_ownership.get(coin, {})
+            
+            # 如果币种已被锁定，返回 False（非阻塞）
+            if ownership.get('locked', False):
+                self.logger.debug(f"Coin {coin} is already locked by {ownership.get('owner_strategy_id')}")
+                return False
+            
+            # 锁定币种，记录所有者和获取时间戳
+            self.coin_ownership[coin] = {
+                'locked': True,
+                'owner_strategy_id': strategy_id,
+                'acquired_at': time.time()
+            }
+            
+            self.logger.debug(f"Acquired lock for coin {coin} by strategy {strategy_id}")
+            return True
+
+    def release_coin(self, coin: str, strategy_id: str = None, force: bool = False) -> bool:
+        """
+        释放币种的锁（完成下单后调用）
+        
+        参数：
+            coin: 币种代码，例如 'BTC', 'ETH'
+            strategy_id: 可选，建议传入你的策略 ID 以验证所有权
+            force: 仅供系统级别使用，不建议策略层调用
+        
+        返回：
+            True - 成功释放锁
+            False - 释放失败（通常是所有权不匹配）
+        
+        示例：
+            portfolio.release_coin('BTC', strategy_id='my_strategy')
+        """
+        with self._ownership_lock:
+            ownership = self.coin_ownership.get(coin, {})
+            
+            # 如果币种未被锁定，无操作
+            if not ownership.get('locked', False):
+                self.logger.debug(f"Coin {coin} is not locked, nothing to release")
+                return True
+            
+            owner = ownership.get('owner_strategy_id')
+            
+            # 检查所有权：如果指定了 strategy_id 且不匹配，且非强制模式，则拒绝
+            if strategy_id is not None and owner != strategy_id and not force:
+                self.logger.warning(
+                    f"Cannot release coin {coin}: owned by {owner}, requested by {strategy_id}"
+                )
+                return False
+            
+            # 释放锁
+            self.coin_ownership[coin] = {
+                'locked': False,
+                'owner_strategy_id': None,
+                'acquired_at': None
+            }
+            
+            self.logger.debug(f"Released lock for coin {coin} (was owned by {owner})")
+            return True
 
     # ================= 策略参数管理 =================
 
     def set_strategy_params(self, coin: str, strategy_id: str, stop_loss: float, take_profit: float):
         """
-        为某个币种在指定策略下登记止损和止盈参数
+        为币种设置止损和止盈价格（下单时设置）
+        
+        参数：
+            coin: 币种代码，例如 'BTC'
+            strategy_id: 你的策略 ID
+            stop_loss: 止损价格（触发卖出的最低价格）
+            take_profit: 止盈价格（触发卖出的最高价格）
+        
+        示例：
+            portfolio.set_strategy_params('BTC', 'my_strategy', stop_loss=30000, take_profit=50000)
         """
         params = self.strategy_params.get(coin, {})
         owner = params.get('strategy_id')
@@ -118,11 +197,64 @@ class Portfolio:
 
     def get_strategy_params(self, coin: str) -> Dict:
         """
-        返回指定币种的策略参数（止损、止盈）
+        获取币种的策略参数（止损、止盈价格）
+        
+        参数：
+            coin: 币种代码
+        
+        返回：
+            包含 'strategy_id', 'stop_loss', 'take_profit' 的字典
+        
+        示例：
+            params = portfolio.get_strategy_params('BTC')
+            print(f"止损价格: {params.get('stop_loss')}")
         """
         return self.strategy_params.get(coin, {})
 
-    # ================= 订单监控 =================
+    def get_coin_lock_status(self, coin: str) -> Dict:
+        """
+        获取某个币种的锁定状态。
+        返回 {coin: ..., locked: bool, owner_strategy_id: str, acquired_at: float}
+        """
+        with self._ownership_lock:
+            ownership = self.coin_ownership.get(coin, {})
+            return {
+                'coin': coin,
+                'locked': ownership.get('locked', False),
+                'owner_strategy_id': ownership.get('owner_strategy_id'),
+                'acquired_at': ownership.get('acquired_at')
+            }
+
+    def force_release_coin(self, coin: str) -> bool:
+        """
+        强制释放币种锁（仅供管理员/恢复使用）。
+        不检查所有权，直接解除锁定。
+        """
+        with self._ownership_lock:
+            if coin in self.coin_ownership:
+                owner = self.coin_ownership[coin].get('owner_strategy_id')
+                self.coin_ownership[coin] = {
+                    'locked': False,
+                    'owner_strategy_id': None,
+                    'acquired_at': None
+                }
+                self.logger.warning(
+                    f"Force-released lock for coin {coin} (was owned by {owner}) - admin intervention"
+                )
+                return True
+        return False
+
+    def get_all_lock_status(self) -> Dict[str, Dict]:
+        """获取所有币种的锁定状态快照。"""
+        with self._ownership_lock:
+            return {
+                coin: {
+                    'locked': info.get('locked', False),
+                    'owner_strategy_id': info.get('owner_strategy_id'),
+                    'acquired_at': info.get('acquired_at')
+                }
+                for coin, info in self.coin_ownership.items()
+            }
 
     def start_monitoring(self, interval: float = 2.0):
         """
@@ -157,8 +289,15 @@ class Portfolio:
 
     def register_order_execution(self, coin: str, strategy_id: str, side: str, qty: float, price: float):
         """
-        在订单被成交后由 Execution 调用。
-        更新持仓，并在需要时释放锁。
+        在订单被成交后由执行引擎调用（策略层通常不直接调用）。
+        更新持仓，并在订单完全成交时自动释放锁。
+        
+        参数：
+            coin: 币种代码
+            strategy_id: 策略 ID
+            side: 'BUY' 或 'SELL'
+            qty: 成交数量
+            price: 成交价格
         """
         # 如果缺少持仓记录则初始化
         pos = self.positions.get(coin, {'free': 0.0, 'locked': 0.0})
@@ -183,18 +322,17 @@ class Portfolio:
             pass
 
         self.positions[coin] = pos
+        self.logger.info(f"Updated position for {coin}: {pos} (side={s}, qty={qty})")
 
-        # 如果该策略曾拥有该币种锁，则在成交后释放锁（这是常见模式）
-        params = self.strategy_params.get(coin, {})
-        owner = params.get('strategy_id')
-        if owner == strategy_id:
-            # 保留 stop_loss/stop_profit 等参数，但释放锁
-            try:
-                self.release_coin(coin)
-            except Exception:
-                # 忽略释放时的错误
-                pass
-
-        # 可选：通知 execution 模块或记录日志（execution 持有引用）
+        # 如果该策略拥有该币种锁，则释放锁
+        # 这是为了在订单被成交时自动释放币种所有权
+        ownership = self.coin_ownership.get(coin, {})
+        if ownership.get('owner_strategy_id') == strategy_id:
+            success = self.release_coin(coin, strategy_id=strategy_id)
+            if success:
+                self.logger.info(f"Released lock for coin {coin} after execution by {strategy_id}")
+            else:
+                self.logger.warning(f"Failed to release lock for coin {coin} (strategy_id mismatch)")
+        
         return True
 
