@@ -99,31 +99,40 @@ class CryptoSpotEnv(gym.Env):
         self.net_worth = self.cash_balance + (self.crypto_position * next_price)
         self.max_net_worth = max(self.max_net_worth, self.net_worth)
 
-        # ── 修复 Bug 3：奖励函数改为风险调整收益 ──────────────────
+        # ── 奖励函数：超额收益 + 决策力激励 ─────────────────────────
         step_return = (self.net_worth - old_net_worth) / old_net_worth
-
-        # 缓存最近 N 步收益率，用于计算波动率
-        self._recent_returns.append(step_return)
-        if len(self._recent_returns) > 48:           # 保留最近 48 步（12 小时）
-            self._recent_returns.pop(0)
-
-        if len(self._recent_returns) >= 4:
-            vol = np.std(self._recent_returns) + 1e-8
-            reward = step_return / vol               # Sharpe 风格：收益 / 波动率
-        else:
-            reward = step_return                     # 数据不足时直接用收益率
-
-        # ── 修复 Bug 4：FOMO 惩罚阈值与实际仓位档位对齐 ──────────
         market_return = (next_price - current_price) / current_price
         current_position_ratio = (self.crypto_position * current_price) / max(self.net_worth, 1e-8)
 
-        # 市场涨超 0.1%，但仓位低于 15%（约对应 action=1 或 action=0）
-        if market_return > 0.001 and current_position_ratio < 0.15:
-            reward -= market_return * 0.3            # 适度 FOMO 惩罚（不要太大）
+        # 缓存最近 N 步收益率，用于计算波动率
+        self._recent_returns.append(step_return)
+        if len(self._recent_returns) > 48:
+            self._recent_returns.pop(0)
 
-        # 额外：持仓期间市场大跌但仓位 > 85% 时，给予额外惩罚（鼓励止损）
+        vol = np.std(self._recent_returns) + 1e-8 if len(self._recent_returns) >= 4 else 1e-4
+
+        # 1. 核心奖励：相对大盘的超额收益 / 波动率
+        #    持有 X% 仓位时，"应得"的市场收益是 market_return * X%
+        #    超额部分才是模型真正贡献的 alpha
+        benchmark_return = market_return * current_position_ratio
+        excess_return = step_return - benchmark_return
+        reward = excess_return / vol
+
+        # 2. 决策力激励：鼓励模型做出明确的仓位决策（靠近 0 或 1）
+        #    惩罚永远待在 0.5 的"和稀泥"行为
+        #    abs(0.5 - 0.5) = 0  →  无奖励
+        #    abs(1.0 - 0.5) = 0.5 → 奖励 0.05
+        #    abs(0.0 - 0.5) = 0.5 → 奖励 0.05
+        decisiveness_bonus = abs(target_weight - 0.5) * 0.1
+        reward += decisiveness_bonus
+
+        # 3. FOMO / 止损 惩罚（阈值与11档动作空间对齐）
+        #    市场涨超 0.1% 但仓位低于 15% → 错失惩罚
+        if market_return > 0.001 and current_position_ratio < 0.15:
+            reward -= market_return * 0.3
+        #    市场跌超 0.1% 但仓位高于 85% → 止损惩罚
         if market_return < -0.001 and current_position_ratio > 0.85:
-            reward += market_return * 0.3            # market_return 本身为负，这里是减分
+            reward += market_return * 0.3   # market_return 为负，等于减分
 
         # ── 修复 Bug 1：done 变量在所有分支前初始化 ──────────────
         done = False
