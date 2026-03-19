@@ -10,6 +10,7 @@ PyYAML>=6.0.0
 # Machine Learning & Evaluation
 scikit-learn>=1.2.0
 xgboost>=3.2.0
+lightgbm>=3.3.0
 
 # Data Visualization
 matplotlib>=3.7.0
