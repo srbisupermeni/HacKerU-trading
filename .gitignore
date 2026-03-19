@@ -9,3 +9,6 @@ roostoo.yaml
 __pycache__
 
 .vscode/**
+
+tensorboard_logs/
+models/

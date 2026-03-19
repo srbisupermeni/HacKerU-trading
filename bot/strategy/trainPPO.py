@@ -4,28 +4,46 @@ import pandas as pd
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv
 from stable_baselines3.common.callbacks import EvalCallback
+import sys
+from pathlib import Path
 
+ROOT = Path(__file__).resolve().parent.parent.parent 
+if str(ROOT) not in sys.path:
+    sys.path.append(str(ROOT))
 # 导入你写好的模块
-from database.Binance_fetcher import BinanceDataFetcher
-from data.feature_engineering import FeatureEngineer
+from database.Binance_Vision_fetcher import VisionFetcher
+from bot.data.feature_engineering import FeatureEngineer
 from rl_env import CryptoSpotEnv
 
-def prepare_data(symbol="BTCUSDT", interval="15m", limit=10000):
-    """拉取数据并划分为训练集和验证集"""
-    print(f"1. 正在从 Binance 获取 {limit} 根 {interval} K线数据...")
-    fetcher = BinanceDataFetcher()
-    # 为了让模型有足够的数据学习，我们拉取 10000 根线 (约 100 天的 15 分钟数据)
-    raw_df = fetcher.fetch_recent_klines(symbol=symbol, interval=interval, limit=limit)
+def prepare_data(symbol="BTCUSDT", interval="15m"):
+    """使用 Binance Vision 获取海量历史数据"""
+    print(f"1. 正在从 Binance Vision 下载 {symbol} ({interval}) 的历史月度数据...")
     
+    fetcher = VisionFetcher()
+    
+    # 获取 2023年7月 到 2024年2月（共8个月）的数据，数据量足够大且包含牛熊转换
+    raw_df = fetcher.fetch_klines_range(
+        symbol=symbol, 
+        interval=interval, 
+        start_year=2025, start_month=1, 
+        end_year=2025, end_month=12,
+        data_type="monthly"
+    )
+    
+    if raw_df is None or raw_df.empty:
+        raise ValueError("未能获取到数据，请检查网络或时间范围设置。")
+
+    print(f"原始数据下载完成，共 {len(raw_df)} 行。")
     print("2. 执行特征工程...")
+    
     engineer = FeatureEngineer()
     features_df = engineer.generate_features(raw_df)
     
-    # 剔除可能包含 NaN 的行 (通常在滚动窗口初期产生)
+    # 剔除由于滚动窗口产生的 NaN 值
     features_df.dropna(inplace=True)
     features_df.reset_index(drop=True, inplace=True)
     
-    # 按照时间序列 80% 训练，20% 验证
+    # 按时间序列 80% 训练，20% 验证
     split_idx = int(len(features_df) * 0.8)
     train_df = features_df.iloc[:split_idx]
     eval_df = features_df.iloc[split_idx:]
@@ -39,7 +57,7 @@ def main():
     os.makedirs("./tensorboard_logs", exist_ok=True)
 
     # 1. 准备数据
-    train_df, eval_df = prepare_data(symbol="BTCUSDT", interval="15m", limit=10000)
+    train_df, eval_df = prepare_data(symbol="BTCUSDT", interval="15m")
 
     # 2. 创建训练环境和验证环境
     # Stable-Baselines3 要求环境必须用 VecEnv 包装
