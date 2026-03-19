@@ -173,6 +173,10 @@ class ExecutionEngine:
         status = None
         filled_qty = 0.0
         orig_qty = quantity
+        exec_price = None
+        commission_coin = None
+        commission_value = 0.0
+        commission_percent = None
 
         # 尝试从 OrderDetail 容器中读取（按 API 文档）
         if isinstance(result, dict):
@@ -181,8 +185,18 @@ class ExecutionEngine:
                 order_id = od.get('OrderID') or od.get('order_id')
                 status = od.get('Status') or od.get('status')
                 filled_qty = od.get('FilledQuantity') or od.get('FilledQty') or od.get('filled_qty') or 0
+                exec_price = od.get('FilledAverPrice') or od.get('Price') or price
                 # 提取原始数量以计算剩余量
                 orig_qty = od.get('Quantity') or od.get('quantity') or quantity
+                # 提取手续费信息（若有）
+                commission_coin = od.get('CommissionCoin') or od.get('commission_coin')
+                commission_value = od.get('CommissionChargeValue') if od.get('CommissionChargeValue') is not None else od.get('commission_charge_value')
+                commission_percent = od.get('CommissionPercent') or od.get('commission_percent')
+                # 规范化为数值
+                try:
+                    commission_value = float(commission_value) if commission_value is not None else 0.0
+                except Exception:
+                    commission_value = 0.0
 
             # OrderMatched 列表回退
             if not order_id and isinstance(result.get('OrderMatched'), list) and len(result.get('OrderMatched')) > 0:
@@ -192,6 +206,8 @@ class ExecutionEngine:
                 filled_qty = filled_qty or first.get('FilledQuantity') or first.get('FilledQty') or first.get(
                     'filled_qty') or 0
                 orig_qty = first.get('Quantity') or first.get('quantity') or quantity
+                if exec_price is None:
+                    exec_price = first.get('FilledAverPrice') or first.get('Price') or price
 
         try:
             filled_qty = float(filled_qty or 0.0)
@@ -199,6 +215,11 @@ class ExecutionEngine:
         except Exception:
             filled_qty = 0.0
             orig_qty = float(quantity)
+
+        try:
+            exec_price = float(exec_price if exec_price is not None else (price or 0.0))
+        except Exception:
+            exec_price = float(price or 0.0)
 
         # 计算剩余数量
         remaining_qty = max(0.0, orig_qty - filled_qty)
@@ -214,7 +235,10 @@ class ExecutionEngine:
             # 在这种情况下，注册执行并释放锁
             if st == 'FILLED' or remaining_qty <= 0.001:  # 允许 0.001 的浮点误差
                 self.portfolio.register_order_execution(coin, strategy_id, side, filled_qty or quantity,
-                                                        price or 0.0)
+                                                        exec_price,
+                                                        fee_amount=(commission_value if 'commission_value' in locals() else 0.0),
+                                                        fee_currency=(commission_coin if 'commission_coin' in locals() else None),
+                                                        fee_percent=(commission_percent if 'commission_percent' in locals() else None))
                 # 立即设置策略参数（若策略所有者不匹配可能抛出）
                 try:
                     if stop_loss is not None or take_profit is not None:
@@ -243,8 +267,11 @@ class ExecutionEngine:
             # 部分成交的情况（有一些成交但还有剩余）
             # 注册已成交部分，但保持锁定并将订单加入待处理队列
             elif filled_qty > 0.0 and remaining_qty > 0.001:
-                # 注册已成交部分
-                self.portfolio.register_order_execution(coin, strategy_id, side, filled_qty, price or 0.0)
+                # 注册已成交部分（包含手续费信息，如果 API 提供）
+                self.portfolio.register_order_execution(coin, strategy_id, side, filled_qty, exec_price,
+                                                        fee_amount=(commission_value if 'commission_value' in locals() else 0.0),
+                                                        fee_currency=(commission_coin if 'commission_coin' in locals() else None),
+                                                        fee_percent=(commission_percent if 'commission_percent' in locals() else None))
                 
                 # 注意：register_order_execution 会检查所有权并释放锁
                 # 但对于部分成交，我们想保持锁定！
@@ -274,6 +301,9 @@ class ExecutionEngine:
                         'filled_quantity': filled_qty,
                         'remaining_quantity': remaining_qty,
                         'price': price,
+                        'commission_coin': commission_coin,
+                        'commission_value': commission_value,
+                        'commission_percent': commission_percent,
                         'created_at': int(time.time() * 1000),
                         'raw': result
                     })
@@ -299,6 +329,9 @@ class ExecutionEngine:
                         'filled_quantity': filled_qty,
                         'remaining_quantity': remaining_qty,
                         'price': price,
+                        'commission_coin': commission_coin,
+                        'commission_value': commission_value,
+                        'commission_percent': commission_percent,
                         'created_at': int(time.time() * 1000),
                         'raw': result
                     })
@@ -381,6 +414,23 @@ class ExecutionEngine:
                     return True
         
         return False
+
+    def _get_pending_order_meta(self, order_id: str) -> Optional[Dict[str, Any]]:
+        """线程安全地读取某个待处理订单的元数据副本（不移除）。
+
+        返回订单元数据（字典）或 None 如果找不到。
+        """
+        order_id = str(order_id)
+        with self._pq_lock:
+            key = self._orderid_index.get(order_id)
+            if not key:
+                return None
+            lst = self.pending_orders_queue.get(key, [])
+            for order_meta in lst:
+                if str(order_meta.get('order_id')) == order_id:
+                    # 返回副本以避免外部修改内部结构
+                    return dict(order_meta)
+        return None
 
     def get_pending_orders_snapshot(self) -> Dict[str, List[Dict[str, Any]]]:
         """
@@ -526,11 +576,47 @@ class ExecutionEngine:
                 side = e.get('Side') or e.get('side') or 'BUY'
                 price = e.get('FilledAverPrice') or e.get('Price') or 0.0
 
+                # 读取当前我们记录的 pending 元数据（如果存在）
+                pending_meta = self._get_pending_order_meta(oid_s)
+
+                # 计算已成交的增量 (delta)
+                prev_filled = 0.0
+                if pending_meta:
+                    prev_filled = float(pending_meta.get('filled_quantity', 0.0) or 0.0)
+
+                newly_filled = max(0.0, filled - prev_filled)
+
+                # 提取手续费信息（如果存在）
+                commission_coin = e.get('CommissionCoin') or e.get('commission_coin') or None
+                commission_value = e.get('CommissionChargeValue') or e.get('commissionchargevalue') or e.get('CommissionChargeValue'.lower()) or 0.0
+                commission_percent = e.get('CommissionPercent') or e.get('commission_percent') or None
+                try:
+                    commission_value = float(commission_value or 0.0)
+                except Exception:
+                    commission_value = 0.0
+                prev_commission = 0.0
+                if pending_meta:
+                    try:
+                        prev_commission = float(pending_meta.get('commission_value', 0.0) or 0.0)
+                    except Exception:
+                        prev_commission = 0.0
+                commission_delta = max(0.0, commission_value - prev_commission)
+
                 # 情况 1：订单完全成交（remaining <= 0.001 或 status == FILLED）
                 if remaining <= 0.001 or status == 'FILLED':
                     try:
-                        # 注册最终成交（使用实际成交量）
-                        self.portfolio.register_order_execution(coin, strat, side, filled, price)
+                        # 如果有之前部分已登记，仅注册未登记的增量
+                        if newly_filled > 0:
+                            self.portfolio.register_order_execution(coin, strat, side, newly_filled, price,
+                                                                    fee_amount=commission_delta,
+                                                                    fee_currency=commission_coin,
+                                                                    fee_percent=commission_percent)
+                        # 如果没有增量但仍认为已完成（edge case），尝试注册整个已成交量以保证一致性
+                        elif not pending_meta:
+                            self.portfolio.register_order_execution(coin, strat, side, filled, price,
+                                                                    fee_amount=commission_value,
+                                                                    fee_currency=commission_coin,
+                                                                    fee_percent=commission_percent)
                     except Exception:
                         self.logger.exception(f"Failed to register_order_execution for {oid_s}")
 
@@ -551,15 +637,24 @@ class ExecutionEngine:
 
                 # 情况 2：订单部分成交（0 < filled < orig_qty，且 remaining > 0.001）
                 elif filled > 0.0 and remaining > 0.001:
-                    # 更新待处理订单的元数据
                     try:
+                        # 仅注册未登记的增量
+                        if newly_filled > 0:
+                            self.portfolio.register_order_execution(coin, strat, side, newly_filled, price,
+                                                                    fee_amount=commission_delta,
+                                                                    fee_currency=commission_coin,
+                                                                    fee_percent=commission_percent)
+                        # 更新待处理订单的元数据（累计已成交量）
                         self._update_pending_order_by_id(oid_s, {
                             'filled_quantity': filled,
                             'remaining_quantity': remaining,
+                            'commission_value': commission_value,
+                            'commission_coin': commission_coin,
+                            'commission_percent': commission_percent,
                             'last_update': int(time.time() * 1000)
                         })
                     except Exception:
-                        self.logger.exception(f"Failed to update pending order {oid_s} after partial fill")
+                        self.logger.exception(f"Failed to update/register pending order {oid_s} after partial fill")
 
                     processed.append({
                         'order_id': oid_s,
