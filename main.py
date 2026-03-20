@@ -10,7 +10,7 @@ if str(ROOT) not in sys.path:
     sys.path.append(str(ROOT))
 
 # 导入你的核心组件
-from bot.execution.roostoo import Roostoo
+from bot.api.roostoo import Roostoo
 from bot.portfolio.portfolio import Portfolio
 from bot.execution.execution_engine import ExecutionEngine
 from bot.strategy.strategy_ml import DualMLStrategy

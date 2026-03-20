@@ -14,7 +14,7 @@ import time
 from typing import Dict
 
 from pathlib import Path
-from bot.execution.roostoo import Roostoo
+from bot.api.roostoo import Roostoo
 from bot.execution.execution_engine import ExecutionEngine
 from bot.portfolio.portfolio import Portfolio
 
