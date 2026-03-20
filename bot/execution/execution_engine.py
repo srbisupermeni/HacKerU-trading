@@ -275,13 +275,6 @@ class ExecutionEngine:
                                                         fee_amount=(commission_value if 'commission_value' in locals() else 0.0),
                                                         fee_currency=(commission_coin if 'commission_coin' in locals() else None),
                                                         fee_percent=(commission_percent if 'commission_percent' in locals() else None))
-                # 立即设置策略参数（若策略所有者不匹配可能抛出）
-                try:
-                    if stop_loss is not None or take_profit is not None:
-                        self.portfolio.set_strategy_params(coin, strategy_id, stop_loss, take_profit)
-                except Exception:
-                    # Do not fail execution if setting params fails
-                    self.logger.exception('Failed to set strategy params after filled order')
 
                 # If this order was previously indexed as pending (defensive), remove it
                 if order_id_str:
@@ -296,12 +289,6 @@ class ExecutionEngine:
             # 部分成交的情况（有一些成交但还有剩余）
             # 仅更新待处理队列，组合账本仅在完全成交时更新
             elif filled_qty > 0.0 and remaining_qty > 0.001:
-                # 设置策略参数
-                if stop_loss is not None or take_profit is not None:
-                    try:
-                        self.portfolio.set_strategy_params(coin, strategy_id, stop_loss, take_profit)
-                    except Exception:
-                        self.logger.exception('Failed to set strategy params after partial fill')
 
                 # 将订单加入队列以供后续轮询
                 # 跟踪原始数量、已成交数量和剩余数量
@@ -326,10 +313,6 @@ class ExecutionEngine:
 
             # 如果订单为 PENDING（挂单 / MAKER），将订单加入 pending_orders_queue 并设置策略参数
             elif st == 'PENDING' or (parsed and parsed.get('raw', {}).get('Role') == 'MAKER'):
-                # 设置参数，便于监控在订单成交时采取动作
-                if stop_loss is not None or take_profit is not None:
-                    self.portfolio.set_strategy_params(coin, strategy_id, stop_loss, take_profit)
-
                 # 将订单加入队列以供后续轮询
                 # 跟踪原始数量和已成交数量
                 if order_id_str:
@@ -351,13 +334,6 @@ class ExecutionEngine:
                 return {'success': True, 'order_id': order_id, 'status': status, 'queued': True, 'raw': result}
 
             else:
-                # 其他状态（REJECTED/FAILED/UNKNOWN）
-                try:
-                    if stop_loss is not None or take_profit is not None:
-                        self.portfolio.set_strategy_params(coin, strategy_id, stop_loss, take_profit)
-                except Exception:
-                    pass
-
                 return {'success': False, 'order_id': order_id, 'status': status, 'raw': result}
 
         except Exception as e:

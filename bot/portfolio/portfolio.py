@@ -1,7 +1,6 @@
-import threading
-import time
 import logging
-from typing import Dict, Optional, Any
+import time
+from typing import Dict, Any
 
 
 class Portfolio:
@@ -61,17 +60,6 @@ class Portfolio:
         # ===== PnL 追踪（新增）=====
         # {coin: {'unrealized_pnl': float, 'realized_pnl': float, ...}}
         self.pnl_tracking: Dict[str, Dict] = {}
-
-        # ===== 币种锁管理（已停用） =====
-        # 策略层自行控制币种分配，组合层仅保留兼容 API
-
-        # ===== 策略参数 =====
-        # {coin: {'strategy_id': str, 'stop_loss': float, 'take_profit': float}}
-        self.strategy_params: Dict[str, Dict] = {}
-
-        # 用于后台监控止损/止盈的线程
-        self.monitoring_thread: Optional[threading.Thread] = None
-        self.monitoring_active = False
 
     def initialize_from_exchange_info(self, roostoo_client=None, exchange_info: Dict[str, Any] = None,
                                       account_currency: str = 'USD', fallback_balance: float = 0.0,
@@ -228,19 +216,19 @@ class Portfolio:
             'locked': pos.get('locked', 0.0),
             'total': pos.get('free', 0.0) + pos.get('locked', 0.0)
         }
-        
+
         # 获取成本信息
         cb = self.cost_basis.get(coin, {})
         total_qty = cb.get('total_quantity', 0.0)
         total_cost = cb.get('total_cost', 0.0)
-        
+
         result['avg_entry_price'] = (total_cost / total_qty) if total_qty > 0 else 0.0
         result['total_cost'] = total_cost
-        
+
         # 获取当前价格
         current_price = self.market_prices.get(coin, 0.0)
         result['current_price'] = current_price
-        
+
         # 计算未实现 PnL
         if current_price > 0 and total_qty > 0:
             unrealized_value = current_price * total_qty
@@ -251,127 +239,15 @@ class Portfolio:
         else:
             result['unrealized_pnl'] = 0.0
             result['unrealized_pnl_pct'] = 0.0
-        
+
         # 获取已实现 PnL
         pnl = self.pnl_tracking.get(coin, {})
         result['realized_pnl'] = pnl.get('realized_pnl', 0.0)
-        
+
         # 总收益
         result['total_pnl'] = result['unrealized_pnl'] + result['realized_pnl']
-        
+
         return result
-
-    # ================= 币种锁管理 =================
-
-    def acquire_coin(self, coin: str, strategy_id: str) -> bool:
-        """
-        兼容旧接口：已停用，始终返回 True。
-        """
-        # 兼容保留：不再执行应用级锁控制
-        _ = (coin, strategy_id)
-        return True
-
-    def release_coin(self, coin: str, strategy_id: str = None, force: bool = False) -> bool:
-        """
-        兼容旧接口：已停用，始终返回 True。
-        """
-        # 兼容保留：不再执行应用级锁控制
-        _ = (coin, strategy_id, force)
-        return True
-
-    # ================= 策略参数管理 =================
-
-    def set_strategy_params(self, coin: str, strategy_id: str, stop_loss: float, take_profit: float):
-        """
-        为币种设置止损和止盈价格（下单时设置）
-        
-        参数：
-            coin: 币种代码，例如 'BTC'
-            strategy_id: 你的策略 ID
-            stop_loss: 止损价格（触发卖出的最低价格）
-            take_profit: 止盈价格（触发卖出的最高价格）
-        
-        示例：
-            portfolio.set_strategy_params('BTC', 'my_strategy', stop_loss=30000, take_profit=50000)
-        """
-        params = self.strategy_params.get(coin, {})
-        owner = params.get('strategy_id')
-        if owner and owner != strategy_id:
-            # 不允许覆盖被其他策略拥有的参数
-            raise PermissionError(f"Strategy {strategy_id} cannot set params for {coin} owned by {owner}")
-
-        params['strategy_id'] = strategy_id
-        params['stop_loss'] = stop_loss
-        params['take_profit'] = take_profit
-        self.strategy_params[coin] = params
-
-    def get_strategy_params(self, coin: str) -> Dict:
-        """
-        获取币种的策略参数（止损、止盈价格）
-        
-        参数：
-            coin: 币种代码
-        
-        返回：
-            包含 'strategy_id', 'stop_loss', 'take_profit' 的字典
-        
-        示例：
-            params = portfolio.get_strategy_params('BTC')
-            print(f"止损价格: {params.get('stop_loss')}")
-        """
-        return self.strategy_params.get(coin, {})
-
-    def get_coin_lock_status(self, coin: str) -> Dict:
-        """
-        兼容旧接口：返回固定的未锁定状态。
-        """
-        # 锁逻辑停用后，始终返回未锁定状态
-        return {
-            'coin': coin,
-            'locked': False,
-            'owner_strategy_id': None,
-            'acquired_at': None
-        }
-
-    def force_release_coin(self, coin: str) -> bool:
-        """
-        兼容旧接口：已停用，始终返回 True。
-        """
-        _ = coin
-        return True
-
-    def get_all_lock_status(self) -> Dict[str, Dict]:
-        """获取所有币种的锁定状态快照。"""
-        return {}
-
-    def start_monitoring(self, interval: float = 2.0):
-        """
-        启动后台线程，用于监控止损/止盈触发
-        """
-        if self.monitoring_thread is None or not self.monitoring_thread.is_alive():
-            self.monitoring_active = True
-            self.monitoring_thread = threading.Thread(target=self._monitor_loop, args=(interval,))
-            self.monitoring_thread.start()
-
-    def stop_monitoring(self):
-        """
-        停止后台监控线程
-        """
-        self.monitoring_active = False
-        if self.monitoring_thread:
-            self.monitoring_thread.join()
-
-    def _monitor_loop(self, interval: float):
-        """
-        内部循环：监控持仓并在触发止损/止盈时调用 Execution 下单
-        """
-        while self.monitoring_active:
-            # TODO: 根据每个币种的当前价格与止损/止盈比较，触发相应的下单
-            try:
-                # 最小睡眠以避免忙等；实际实现应拉取价格数据并判断
-                time.sleep(interval)
-            except Exception:
-                break
 
     # ================= 订单执行更新 =================
 
@@ -390,12 +266,12 @@ class Portfolio:
         # ===== 第一步：更新持仓数量 =====
         if coin not in self.positions:
             self.positions[coin] = {'free': 0.0, 'locked': 0.0}
-        
+
         if side.upper() == 'BUY':
             self.positions[coin]['free'] += qty
         else:  # SELL
             self.positions[coin]['free'] -= qty
-        
+
         # ===== 第二步：初始化成本追踪 =====
         if coin not in self.cost_basis:
             self.cost_basis[coin] = {
@@ -404,7 +280,7 @@ class Portfolio:
                 'buy_transactions': [],
                 'sell_transactions': []
             }
-        
+
         # ===== 第三步：处理 BUY 订单 =====
         if side.upper() == 'BUY':
             # 如果手续费以币种本身计费（fee_currency == coin），则收到的净数量为 qty - fee_amount
@@ -436,8 +312,9 @@ class Portfolio:
                 'fee_percent': fee_percent
             })
 
-            self.logger.info(f"[BUY] {coin}: +{net_qty} (gross {qty}) @ {price}, 总成本={self.cost_basis[coin]['total_cost']}")
-        
+            self.logger.info(
+                f"[BUY] {coin}: +{net_qty} (gross {qty}) @ {price}, 总成本={self.cost_basis[coin]['total_cost']}")
+
         # ===== 第四步：处理 SELL 订单 =====
         else:  # SELL
             if coin not in self.pnl_tracking:
@@ -508,14 +385,13 @@ class Portfolio:
                 f"[SELL] {coin}: -{effective_qty} @ {price}, 成本={avg_cost:.2f}, 收益={profit:.2f} "
                 f"({profit_pct:.2f}%) (fee {fee_amount} {fee_currency})"
             )
-        
+
         # ===== 第五步：计算未实现 PnL =====
         if coin in self.market_prices:
             self._update_unrealized_pnl(coin)
-        
 
         return True
-    
+
     def _update_unrealized_pnl(self, coin: str):
         """计算未实现 PnL（内部方法）"""
         if coin not in self.pnl_tracking:
@@ -529,11 +405,11 @@ class Portfolio:
         if coin not in self.cost_basis:
             self.pnl_tracking[coin]['unrealized_pnl'] = 0.0
             return
-        
+
         total_qty = self.cost_basis[coin]['total_quantity']
         total_cost = self.cost_basis[coin]['total_cost']
         current_price = self.market_prices.get(coin, 0.0)
-        
+
         if total_qty > 0 and current_price > 0:
             unrealized_value = current_price * total_qty
             unrealized_pnl = unrealized_value - total_cost
@@ -556,9 +432,9 @@ class Portfolio:
         for coin, price in prices.items():
             self.market_prices[coin] = price
             self._update_unrealized_pnl(coin)
-        
+
         self.logger.info(f"更新市场价格: {prices}")
-    
+
     def get_pnl_snapshot(self) -> Dict[str, Any]:
         """
         获取所有币种的 PnL 汇总
@@ -584,14 +460,14 @@ class Portfolio:
         snapshot = {}
         total_realized = 0.0
         total_unrealized = 0.0
-        
+
         for coin in self.cost_basis.keys():
             cb = self.cost_basis[coin]
             pnl = self.pnl_tracking.get(coin, {})
-            
+
             unrealized = pnl.get('unrealized_pnl', 0.0)
             realized = pnl.get('realized_pnl', 0.0)
-            
+
             snapshot[coin] = {
                 'total_quantity': cb['total_quantity'],
                 'avg_entry_price': (cb['total_cost'] / cb['total_quantity']) if cb['total_quantity'] > 0 else 0.0,
@@ -600,18 +476,18 @@ class Portfolio:
                 'realized_pnl': realized,
                 'total_pnl': unrealized + realized
             }
-            
+
             total_unrealized += unrealized
             total_realized += realized
-        
+
         snapshot['portfolio_summary'] = {
             'total_realized_pnl': total_realized,
             'total_unrealized_pnl': total_unrealized,
             'total_pnl': total_realized + total_unrealized
         }
-        
+
         return snapshot
-    
+
     def get_transaction_history(self, coin: str = None) -> Dict[str, Any]:
         """
         获取交易历史
@@ -643,7 +519,7 @@ class Portfolio:
                     'sell_transactions': cb.get('sell_transactions', [])
                 }
             return result
-    
+
     def get_cost_basis(self, coin: str) -> Dict[str, Any]:
         """
         获取币种的成本基础信息
@@ -661,10 +537,10 @@ class Portfolio:
         cb = self.cost_basis.get(coin, {})
         if not cb:
             return {'total_quantity': 0.0, 'total_cost': 0.0, 'avg_entry_price': 0.0}
-        
+
         return {
             'total_quantity': cb.get('total_quantity', 0.0),
             'total_cost': cb.get('total_cost', 0.0),
-            'avg_entry_price': (cb.get('total_cost', 0.0) / cb.get('total_quantity', 1.0)) 
-                if cb.get('total_quantity', 0.0) > 0 else 0.0
+            'avg_entry_price': (cb.get('total_cost', 0.0) / cb.get('total_quantity', 1.0))
+            if cb.get('total_quantity', 0.0) > 0 else 0.0
         }
