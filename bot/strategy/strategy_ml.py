@@ -23,7 +23,7 @@ from database.Binance_Vision_fetcher import VisionFetcher
 from bot.data.feature_engineering import FeatureEngineer
 from bot.portfolio.portfolio import Portfolio
 from bot.execution.execution_engine import ExecutionEngine
-from bot.execution.roostoo import Roostoo
+from bot.api.roostoo import Roostoo
 
 # ============================================================
 # 全局参数区 (商赛实战配置)
@@ -53,10 +53,10 @@ GROUP_LIMITS = {
     "meme": 1,
     "layer1": 2,
     "ai": 1,
-    "btc": 1
+    "btc": 0  # 🟢 改动 1：将 BTC 的允许持仓数量设为 0，彻底禁封
 }
 
-# 🟢 改动 1：按板块设置更严格的 Edge Floor 门槛
+# 🟢 按板块设置更严格的 Edge Floor 门槛
 EDGE_FLOOR = {
     "meme": 0.035,
     "layer1": 0.018,
@@ -222,7 +222,7 @@ class DualMLStrategy:
 # 主程序：包含冷静期和期望净收益排序的大师循环
 # ============================================================
 if __name__ == "__main__":
-    print("\n" + "=" * 80 + "\n🏆 终极硬核风控版：Meme特调冷静期 + 精准止盈 + Edge强底线\n" + "=" * 80)
+    print("\n" + "=" * 80 + "\n🏆 终极硬核风控版：保留大盘感知，全面禁封 BTC 开仓\n" + "=" * 80)
     roostoo_client = Roostoo()
     portfolio = Portfolio(None); portfolio.account_balance = INITIAL_CAPITAL
     execution = ExecutionEngine(portfolio, roostoo_client); portfolio.execution = execution
@@ -311,7 +311,7 @@ if __name__ == "__main__":
                     portfolio.account_balance += rev
                     trades_count += 1
                     
-                    # 🟢 改动 2：差异化冷却机制 (Meme 单独加长 cooldown)
+                    # 差异化冷却机制 (Meme 单独加长 cooldown)
                     if pnl > 0: 
                         win_count += 1
                         consecutive_losses[coin] = 0
@@ -331,13 +331,16 @@ if __name__ == "__main__":
             
             else:
                 if i < cooldowns.get(coin, 0): continue
+                
+                # 🟢 改动 2：硬性阻断 BTC，彻底屏蔽其参与开仓信号的生成
+                if coin == "BTC": continue 
                     
                 atr_p = float(feat.get("atr_14", 0.0))
                 sma_p = (not pd.isna(feat.get("sma_20"))) and (df.iloc[i-1]["close"] > feat.get("sma_20"))
                 
                 if score > strat.conf_thresh and feat.get("rsi_14", 50) < 68 and sma_p and atr_p >= MIN_ATR_PCT:
                     
-                    # 🟢 改动 3：将 TP 缩近至 atr * 2.8，确保在 12 根 K 线内更容易触达兑现
+                    # 将 TP 缩近至 atr * 2.8，确保在 12 根 K 线内更容易触达兑现
                     tp_pct = float(np.clip(atr_p * 2.8, 0.015, 0.040))
                     sl_pct = float(np.clip(atr_p * 2.0, 0.012, 0.028))
                     
@@ -345,7 +348,7 @@ if __name__ == "__main__":
                     risk_penalty = sl_pct / max(score, 0.1) 
                     expected_edge = (score * tp_pct) - cost - risk_penalty
                     
-                    # 🟢 改动 1：根据不同板块，应用更严格的 Edge Floor 底线
+                    # 根据不同板块，应用更严格的 Edge Floor 底线
                     floor_threshold = EDGE_FLOOR.get(coin_group, 0.015)
                     if expected_edge <= floor_threshold:
                         continue
@@ -381,9 +384,6 @@ if __name__ == "__main__":
                 target_notional = invest / (1 + FEE_RATE)
                 qty = float(smart_quantity(target_notional, entry_p))
                 actual_cost = qty * entry_p * (1 + FEE_RATE)
-                
-                if qty <= 0 or actual_cost < MIN_ORDER_USD or actual_cost > portfolio.account_balance:
-                    continue
                 
                 portfolio.account_balance -= actual_cost
                 remaining_budget -= (qty * entry_p)
