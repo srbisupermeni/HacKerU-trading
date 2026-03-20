@@ -1,0 +1,98 @@
+2026-03-19 15:50:04,034 - INFO - Roostoo API logs initialized in: /Users/luisng/PycharmProjects/HacKerU-trading/bot/logs
+2026-03-19 15:50:04,615 - INFO - executed: [GET] https://mock-api.roostoo.com/v3/serverTime
+2026-03-19 15:50:04,897 - INFO - executed: [GET] https://mock-api.roostoo.com/v3/exchangeInfo
+2026-03-19 15:50:05,187 - INFO - executed: [GET] https://mock-api.roostoo.com/v3/ticker
+2026-03-19 15:50:05,399 - ERROR - fail: [GET] https://mock-api.roostoo.com/v3/balance - 401 Client Error: Unauthorized for url: https://mock-api.roostoo.com/v3/balance?timestamp=1773906605187
+2026-03-19 15:50:05,399 - ERROR - server return: signature error
+2026-03-19 15:50:05,399 - INFO - demo execution
+2026-03-19 15:50:05,656 - ERROR - fail: [GET] https://mock-api.roostoo.com/v3/balance - 401 Client Error: Unauthorized for url: https://mock-api.roostoo.com/v3/balance?timestamp=1773906605400
+2026-03-19 15:50:05,656 - ERROR - server return: signature error
+2026-03-19 15:50:05,657 - INFO - balance: None
+2026-03-19 15:50:05,931 - INFO - executed: [GET] https://mock-api.roostoo.com/v3/ticker
+2026-03-19 15:50:05,932 - INFO - BTC real time price: 70040.23
+2026-03-19 15:50:57,520 - INFO - Roostoo API logs initialized in: /Users/luisng/PycharmProjects/HacKerU-trading/bot/logs
+2026-03-19 15:50:57,908 - INFO - executed: [GET] https://mock-api.roostoo.com/v3/serverTime
+2026-03-19 15:50:58,169 - INFO - executed: [GET] https://mock-api.roostoo.com/v3/exchangeInfo
+2026-03-19 15:50:58,470 - INFO - executed: [GET] https://mock-api.roostoo.com/v3/ticker
+2026-03-19 15:50:58,689 - ERROR - fail: [GET] https://mock-api.roostoo.com/v3/balance - 401 Client Error: Unauthorized for url: https://mock-api.roostoo.com/v3/balance?timestamp=1773906658473
+2026-03-19 15:50:58,690 - ERROR - server return: signature error
+2026-03-19 15:50:58,690 - INFO - demo execution
+2026-03-19 15:50:58,908 - ERROR - fail: [GET] https://mock-api.roostoo.com/v3/balance - 401 Client Error: Unauthorized for url: https://mock-api.roostoo.com/v3/balance?timestamp=1773906658690
+2026-03-19 15:50:58,909 - ERROR - server return: signature error
+2026-03-19 15:50:58,910 - INFO - balance: None
+2026-03-19 15:50:59,416 - INFO - executed: [GET] https://mock-api.roostoo.com/v3/ticker
+2026-03-19 15:50:59,418 - INFO - BTC real time price: 70048.74
+2026-03-19 15:51:32,090 - INFO - Roostoo API logs initialized in: /Users/luisng/PycharmProjects/HacKerU-trading/bot/logs
+2026-03-19 15:51:32,598 - INFO - executed: [GET] https://mock-api.roostoo.com/v3/serverTime
+2026-03-19 15:51:32,966 - INFO - executed: [GET] https://mock-api.roostoo.com/v3/exchangeInfo
+2026-03-19 15:51:33,206 - INFO - executed: [GET] https://mock-api.roostoo.com/v3/ticker
+2026-03-19 15:51:33,435 - ERROR - fail: [GET] https://mock-api.roostoo.com/v3/balance - 401 Client Error: Unauthorized for url: https://mock-api.roostoo.com/v3/balance?timestamp=1773906693208
+2026-03-19 15:51:33,436 - ERROR - server return: signature error
+2026-03-19 15:51:33,437 - INFO - demo execution
+2026-03-19 15:51:33,656 - ERROR - fail: [GET] https://mock-api.roostoo.com/v3/balance - 401 Client Error: Unauthorized for url: https://mock-api.roostoo.com/v3/balance?timestamp=1773906693437
+2026-03-19 15:51:33,656 - ERROR - server return: signature error
+2026-03-19 15:51:33,658 - INFO - balance: None
+2026-03-19 15:51:33,896 - INFO - executed: [GET] https://mock-api.roostoo.com/v3/ticker
+2026-03-19 15:51:33,897 - INFO - BTC real time price: 70098.12
+2026-03-19 15:52:48,196 - INFO - Roostoo API logs initialized in: /Users/luisng/PycharmProjects/HacKerU-trading/bot/logs
+2026-03-19 15:52:48,533 - INFO - executed: [GET] https://mock-api.roostoo.com/v3/serverTime
+2026-03-19 15:52:48,815 - INFO - executed: [GET] https://mock-api.roostoo.com/v3/exchangeInfo
+2026-03-19 15:52:49,038 - INFO - executed: [GET] https://mock-api.roostoo.com/v3/ticker
+2026-03-19 15:52:49,279 - ERROR - fail: [GET] https://mock-api.roostoo.com/v3/balance - 401 Client Error: Unauthorized for url: https://mock-api.roostoo.com/v3/balance?timestamp=1773906769039
+2026-03-19 15:52:49,280 - ERROR - server return: signature error
+2026-03-19 15:52:49,281 - INFO - demo execution
+2026-03-19 15:52:49,642 - ERROR - fail: [GET] https://mock-api.roostoo.com/v3/balance - 401 Client Error: Unauthorized for url: https://mock-api.roostoo.com/v3/balance?timestamp=1773906769281
+2026-03-19 15:52:49,643 - ERROR - server return: signature error
+2026-03-19 15:52:49,645 - INFO - balance: None
+2026-03-19 15:52:49,871 - INFO - executed: [GET] https://mock-api.roostoo.com/v3/ticker
+2026-03-19 15:52:49,872 - INFO - BTC real time price: 70161.41
+2026-03-19 15:53:33,594 - INFO - Roostoo API logs initialized in: /Users/luisng/PycharmProjects/HacKerU-trading/bot/logs
+2026-03-19 15:53:33,901 - INFO - executed: [GET] https://mock-api.roostoo.com/v3/serverTime
+2026-03-19 15:53:34,177 - INFO - executed: [GET] https://mock-api.roostoo.com/v3/exchangeInfo
+2026-03-19 15:53:34,591 - INFO - executed: [GET] https://mock-api.roostoo.com/v3/ticker
+2026-03-19 18:00:43,372 - INFO - Roostoo API logs initialized in: /Users/luisng/PycharmProjects/HacKerU-trading/bot/logs
+2026-03-19 18:00:43,373 - INFO - roostoo_get: GET https://mock-api.roostoo.com/v3/serverTime params=None
+2026-03-19 18:00:44,367 - INFO - executed: [GET] https://mock-api.roostoo.com/v3/serverTime
+2026-03-19 18:05:22,046 - INFO - Roostoo API logs initialized in: /Users/luisng/PycharmProjects/HacKerU-trading/bot/logs
+2026-03-19 18:05:22,599 - INFO - executed: [GET] https://mock-api.roostoo.com/v3/serverTime
+2026-03-19 18:05:23,025 - INFO - executed: [GET] https://mock-api.roostoo.com/v3/exchangeInfo
+2026-03-19 18:05:23,378 - INFO - executed: [GET] https://mock-api.roostoo.com/v3/ticker
+2026-03-19 18:05:23,623 - ERROR - fail: [GET] https://mock-api.roostoo.com/v3/balance - 401 Client Error: Unauthorized for url: https://mock-api.roostoo.com/v3/balance?timestamp=1773914723379
+2026-03-19 18:05:23,623 - ERROR - server return: signature error
+2026-03-19 18:05:23,624 - INFO - demo execution
+2026-03-19 18:05:23,898 - ERROR - fail: [GET] https://mock-api.roostoo.com/v3/balance - 401 Client Error: Unauthorized for url: https://mock-api.roostoo.com/v3/balance?timestamp=1773914723624
+2026-03-19 18:05:23,898 - ERROR - server return: signature error
+2026-03-19 18:05:23,899 - INFO - balance: None
+2026-03-19 18:05:24,120 - INFO - executed: [GET] https://mock-api.roostoo.com/v3/ticker
+2026-03-19 18:05:24,120 - INFO - BTC real time price: 70429.33
+2026-03-19 23:43:02,732 - INFO - Roostoo API logs initialized in: /Users/luisng/PycharmProjects/HacKerU-trading/bot/logs
+2026-03-19 23:43:03,266 - INFO - executed: [GET] https://mock-api.roostoo.com/v3/exchangeInfo
+2026-03-19 23:43:39,339 - INFO - Roostoo API logs initialized in: /Users/luisng/PycharmProjects/HacKerU-trading/bot/logs
+2026-03-19 23:43:39,785 - INFO - executed: [GET] https://mock-api.roostoo.com/v3/exchangeInfo
+2026-03-19 23:46:30,050 - INFO - Roostoo API logs initialized in: /Users/luisng/PycharmProjects/HacKerU-trading/bot/logs
+2026-03-19 23:46:30,062 - ERROR - fail: [GET] http://127.0.0.1:9000/v3/exchangeInfo - HTTPConnectionPool(host='127.0.0.1', port=9000): Max retries exceeded with url: /v3/exchangeInfo (Caused by NewConnectionError("HTTPConnection(host='127.0.0.1', port=9000): Failed to establish a new connection: [Errno 61] Connection refused"))
+2026-03-19 23:46:30,063 - ERROR - fail: [GET] http://127.0.0.1:9000/v3/exchangeInfo - HTTPConnectionPool(host='127.0.0.1', port=9000): Max retries exceeded with url: /v3/exchangeInfo (Caused by NewConnectionError("HTTPConnection(host='127.0.0.1', port=9000): Failed to establish a new connection: [Errno 61] Connection refused"))
+2026-03-19 23:47:16,450 - INFO - Roostoo API logs initialized in: /Users/luisng/PycharmProjects/HacKerU-trading/bot/logs
+2026-03-19 23:49:23,122 - INFO - Roostoo API logs initialized in: /Users/luisng/PycharmProjects/HacKerU-trading/bot/logs
+2026-03-19 23:51:56,522 - INFO - Roostoo API logs initialized in: /Users/luisng/PycharmProjects/HacKerU-trading/bot/logs
+2026-03-19 23:51:56,525 - INFO - executed: [GET] http://127.0.0.1:9000/v3/exchangeInfo
+2026-03-19 23:52:31,827 - INFO - Roostoo API logs initialized in: /Users/luisng/PycharmProjects/HacKerU-trading/bot/logs
+2026-03-19 23:52:31,830 - INFO - executed: [GET] http://127.0.0.1:9000/v3/exchangeInfo
+2026-03-19 23:52:58,455 - INFO - Roostoo API logs initialized in: /Users/luisng/PycharmProjects/HacKerU-trading/bot/logs
+2026-03-19 23:52:58,458 - INFO - executed: [GET] http://127.0.0.1:9000/v3/exchangeInfo
+2026-03-19 23:59:56,081 - INFO - Roostoo API logs initialized in: /Users/luisng/PycharmProjects/HacKerU-trading/bot/logs
+2026-03-19 23:59:56,087 - INFO - executed: [POST] http://127.0.0.1:9000/v3/query_order
+2026-03-19 23:59:56,296 - INFO - executed: [POST] http://127.0.0.1:9000/v3/query_order
+2026-03-19 23:59:56,501 - INFO - Preparing to place order: BUY 0.0871 BTC/USD @ 65229.3872
+2026-03-19 23:59:56,503 - INFO - executed: [POST] http://127.0.0.1:9000/v3/place_order
+2026-03-19 23:59:56,503 - INFO - Order placed successfully! Details: {'Success': True, 'OrderDetail': {'OrderID': 1, 'Status': 'PENDING', 'Role': 'MAKER', 'Pair': 'BTC/USD', 'Side': 'BUY', 'Type': 'LIMIT', 'Price': 65229.3872, 'Quantity': 0.0871, 'FilledQuantity': 0.02089882, 'FilledAverPrice': 65229.3872, 'CommissionCoin': 'BTC', 'CommissionChargeValue': 1.6719056e-05, 'CommissionPercent': 0.0008, 'CreateTimestamp': 1773935996503, 'FinishTimestamp': 0}}
+2026-03-19 23:59:56,505 - INFO - executed: [POST] http://127.0.0.1:9000/v3/query_order
+2026-03-19 23:59:56,706 - INFO - Preparing to place order: SELL 0.0209 BTC/USD @ MARKET
+2026-03-19 23:59:56,710 - INFO - executed: [POST] http://127.0.0.1:9000/v3/place_order
+2026-03-19 23:59:56,710 - INFO - Order placed successfully! Details: {'Success': True, 'OrderDetail': {'OrderID': 2, 'Status': 'FILLED', 'Role': 'TAKER', 'Pair': 'BTC/USD', 'Side': 'SELL', 'Type': 'MARKET', 'Price': 0.0, 'Quantity': 0.0209, 'FilledQuantity': 0.0209, 'FilledAverPrice': 0.0, 'CommissionCoin': 'USD', 'CommissionChargeValue': 0.0, 'CommissionPercent': 0.0012, 'CreateTimestamp': 1773935996709, 'FinishTimestamp': 1773935996709}}
+2026-03-19 23:59:56,713 - INFO - executed: [POST] http://127.0.0.1:9000/v3/query_order
+2026-03-19 23:59:56,920 - INFO - executed: [POST] http://127.0.0.1:9000/v3/query_order
+2026-03-19 23:59:57,125 - INFO - Preparing to place order: BUY 2.2034 XRP/USD @ 0.554
+2026-03-19 23:59:57,130 - INFO - executed: [POST] http://127.0.0.1:9000/v3/place_order
+2026-03-19 23:59:57,130 - INFO - Order placed successfully! Details: {'Success': True, 'OrderDetail': {'OrderID': 3, 'Status': 'PENDING', 'Role': 'MAKER', 'Pair': 'XRP/USD', 'Side': 'BUY', 'Type': 'LIMIT', 'Price': 0.554, 'Quantity': 2.2034, 'FilledQuantity': 0.85851834, 'FilledAverPrice': 0.554, 'CommissionCoin': 'XRP', 'CommissionChargeValue': 0.000686814672, 'CommissionPercent': 0.0008, 'CreateTimestamp': 1773935997129, 'FinishTimestamp': 0}}
+2026-03-19 23:59:57,132 - INFO - executed: [POST] http://127.0.0.1:9000/v3/query_order

@@ -20,7 +20,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from bot.execution.roostoo import Roostoo
+from bot.api.roostoo import Roostoo
 from bot.portfolio.portfolio import Portfolio
 
 

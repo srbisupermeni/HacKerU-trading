@@ -7,7 +7,7 @@
 ```python
 from bot.execution.execution_engine import ExecutionEngine
 from bot.portfolio.portfolio import Portfolio
-from bot.execution.roostoo import Roostoo
+from bot.api.roostoo import Roostoo
 
 portfolio = Portfolio(execution_module=None)
 roostoo = Roostoo()
@@ -111,7 +111,7 @@ for key, orders in pending.items():
 import time
 from bot.execution.execution_engine import ExecutionEngine
 from bot.portfolio.portfolio import Portfolio
-from bot.execution.roostoo import Roostoo
+from bot.api.roostoo import Roostoo
 
 # 初始化
 portfolio = Portfolio(execution_module=None)
@@ -120,6 +120,7 @@ engine = ExecutionEngine(portfolio, roostoo)
 
 # 轮询线程
 import threading
+
 
 def poller_loop():
     while True:
@@ -130,6 +131,7 @@ def poller_loop():
         except:
             time.sleep(3)
 
+
 poller = threading.Thread(target=poller_loop, daemon=True)
 poller.start()
 
@@ -137,7 +139,7 @@ poller.start()
 while True:
     # 你的策略逻辑...
     signal = analyze_market()
-    
+
     if signal == 'BUY':
         result = engine.execute_order(
             coin='BTC',
@@ -146,12 +148,12 @@ while True:
             price=50000.0,
             strategy_id='my_strategy'
         )
-        
+
         if result['success']:
             print(f"BUY: {result['filled_qty']} BTC")
         else:
             print(f"Failed: {result['message']}")
-    
+
     elif signal == 'SELL':
         result = engine.execute_order(
             coin='BTC',
@@ -160,10 +162,10 @@ while True:
             price=55000.0,
             strategy_id='my_strategy'
         )
-        
+
         if result['success']:
             print(f"SELL: {result['filled_qty']} BTC")
-    
+
     time.sleep(1)
 ```
 
