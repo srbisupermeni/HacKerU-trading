@@ -1,7 +1,5 @@
 import sys
-import time
 import logging
-import numpy as np
 import pandas as pd
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -20,11 +18,10 @@ if str(ROOT) not in sys.path:
 
 # 导入项目内的自定义组件
 from database.Binance_Vision_fetcher import VisionFetcher
-from database.Binance_fetcher import BinanceDataFetcher
 from bot.data.feature_engineering import FeatureEngineer
 from bot.portfolio.portfolio import Portfolio
 from bot.execution.execution_engine import ExecutionEngine
-from bot.execution.roostoo import Roostoo
+from bot.api.roostoo import Roostoo
 
 class DualMLStrategy:
     """

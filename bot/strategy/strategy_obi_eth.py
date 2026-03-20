@@ -1,8 +1,5 @@
 import sys
-import os
-import time
 import logging
-import numpy as np
 import pandas as pd
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -16,10 +13,9 @@ if str(ROOT) not in sys.path:
 
 # 引入你的 VisionFetcher 用于半个月深度回测
 from database.Binance_Vision_fetcher import VisionFetcher
-from database.Binance_fetcher import BinanceDataFetcher
 from bot.portfolio.portfolio import Portfolio
 from bot.execution.execution_engine import ExecutionEngine
-from bot.execution.roostoo import Roostoo
+from bot.api.roostoo import Roostoo
 
 class ObiEthStrategy:
     """
@@ -102,35 +98,32 @@ class ObiEthStrategy:
         if pd.isna(latest['atr']) or latest['atr'] <= 0:
             return
 
-        lock_status = self.portfolio.get_coin_lock_status(self.coin)
-        
-        if not lock_status['locked']:
-            cooldown_ok = (self.current_index - self.last_trade_index) >= self.cooldown_bars
-            
-            if (latest['obi_slow'] > self.obi_slow_threshold and 
-                latest['obi_momentum'] > self.obi_momentum_threshold and 
-                latest['vol_ratio'] > self.vol_ratio_threshold and 
-                latest['above_ema'] and cooldown_ok):
+        cooldown_ok = (self.current_index - self.last_trade_index) >= self.cooldown_bars
+
+        if (latest['obi_slow'] > self.obi_slow_threshold and
+            latest['obi_momentum'] > self.obi_momentum_threshold and
+            latest['vol_ratio'] > self.vol_ratio_threshold and
+            latest['above_ema'] and cooldown_ok):
                 
-                self.logger.info(f"🎯 [{self.coin} OBI 突破确认] 触发做多！")
-                
-                min_distance = current_price * 0.005 
-                sl_dist = max(latest['atr'] * self.atr_sl_multiplier, min_distance)
-                tp_dist = max(latest['atr'] * self.atr_tp_multiplier, min_distance * 1.5)
-                
-                sl_price = round(current_price - sl_dist, 4)
-                tp_price = round(current_price + tp_dist, 4)
-                
-                invest_amount = self.portfolio.account_balance * self.alloc_ratio
-                quantity = round(invest_amount / current_price, 4)
-                
-                res = self.execution.execute_order(
-                    coin=self.coin, side='BUY', quantity=quantity, 
-                    price=current_price, order_type='LIMIT', 
-                    strategy_id=self.strategy_id, stop_loss=sl_price, take_profit=tp_price
-                )
-                if res.get('success'):
-                    self.last_trade_index = self.current_index
+            self.logger.info(f"🎯 [{self.coin} OBI 突破确认] 触发做多！")
+
+            min_distance = current_price * 0.005
+            sl_dist = max(latest['atr'] * self.atr_sl_multiplier, min_distance)
+            tp_dist = max(latest['atr'] * self.atr_tp_multiplier, min_distance * 1.5)
+
+            sl_price = round(current_price - sl_dist, 4)
+            tp_price = round(current_price + tp_dist, 4)
+
+            invest_amount = self.portfolio.account_balance * self.alloc_ratio
+            quantity = round(invest_amount / current_price, 4)
+
+            res = self.execution.execute_order(
+                coin=self.coin, side='BUY', quantity=quantity,
+                price=current_price, order_type='LIMIT',
+                strategy_id=self.strategy_id, stop_loss=sl_price, take_profit=tp_price
+            )
+            if res.get('success'):
+                self.last_trade_index = self.current_index
         else:
             if (current_price < latest['ema']) and (latest['obi_slow'] < 0):
                 self.logger.warning(f"⚠️ [{self.coin} 清算警报] 跌破 EMA，建议平仓！")
@@ -210,7 +203,6 @@ if __name__ == "__main__":
                 pos_qty, pos_entry = 0.0, 0.0
                 trades_count += 1
                 print(f"[{curr_time}] {reason} | 卖出: {exit_price:.2f} | 盈亏: {pnl_pct:.2f}% | 余额: ${portfolio.account_balance:.2f}")
-                portfolio.force_release_coin(coin)
                 
         # --- 开仓判定 ---
         if pos_qty == 0:
@@ -232,8 +224,7 @@ if __name__ == "__main__":
                 pos_entry = curr_price
                 
                 strat.last_trade_index = strat.current_index
-                portfolio.acquire_coin(coin, strat.strategy_id)
-                
+
                 print(f"[{curr_time}] 🟢 OBI 突破 | 资金: ${invest:.2f} | OBI Slow: {curr_row['obi_slow']:.3f} | 买入: {curr_price:.2f}")
     
     # 强制平仓清算

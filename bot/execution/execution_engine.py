@@ -3,7 +3,7 @@ import threading
 import time
 from typing import Optional, Dict, List, Any
 
-from bot.execution.roostoo import Roostoo
+from bot.api.roostoo import Roostoo
 from bot.portfolio.portfolio import Portfolio
 
 
@@ -12,15 +12,14 @@ class ExecutionEngine:
     执行引擎 - 负责下单和订单管理
     
     核心功能：
-        1. 获取币种锁，防止重复下单
-        2. 通过 Roostoo API 下单
-        3. 跟踪待处理订单（部分成交、未完全成交的订单）
-        4. 处理订单成交反馈并更新持仓
+        1. 通过 Roostoo API 下单
+        2. 跟踪待处理订单（部分成交、未完全成交的订单）
+        3. 处理订单成交反馈并更新持仓
     
     订单生命周期：
-        - FILLED: 完全成交，立即返回，锁释放
-        - PENDING: 部分成交或未成交，进入待处理队列，锁保持
-        - 部分成交: 保持锁，等待后续查询更新
+        - FILLED: 完全成交，立即返回
+        - PENDING: 部分成交或未成交，进入待处理队列
+        - 部分成交: 等待后续查询更新
     
     使用示例：
         engine = ExecutionEngine(portfolio, roostoo_client)
@@ -52,6 +51,74 @@ class ExecutionEngine:
         # lock protecting pending_orders_queue and _orderid_index
         self._pq_lock = threading.Lock()
 
+    # --- Exceptions / Parsers for strict Roostoo API schema ---
+    class NonConformingRoostooResponse(ValueError):
+        """Raised when a response does not match the canonical Roostoo API schema."""
+        pass
+
+    def _parse_order_obj(self, obj: Dict[str, Any]) -> Dict[str, Any]:
+        """Parse a single canonical Roostoo order object (OrderDetail or an element of OrderMatched).
+
+        This enforces the canonical/official Roostoo field names (case-sensitive) and
+        returns a normalized dict with typed values.
+
+        Required keys: 'OrderID', 'Status', 'Quantity', 'FilledQuantity' (these must exist).
+        Optional keys used if present: 'FilledAverPrice', 'Price', 'CommissionChargeValue', 'CommissionCoin', 'CommissionPercent', 'Side'
+        """
+        if not isinstance(obj, dict):
+            raise self.NonConformingRoostooResponse('Order object is not a dict')
+
+        required = ['OrderID', 'Status', 'Quantity', 'FilledQuantity']
+        missing = [k for k in required if k not in obj]
+        if missing:
+            raise self.NonConformingRoostooResponse(f"Missing keys in Roostoo order object: {missing}")
+
+        try:
+            order_id = str(obj['OrderID'])
+            status = str(obj['Status']).upper() if obj['Status'] is not None else ''
+            orig_qty = float(obj['Quantity'])
+            filled_qty = float(obj.get('FilledQuantity') or 0.0)
+        except Exception as e:
+            raise self.NonConformingRoostooResponse(f"Failed to coerce required order fields: {e}")
+
+        # execution price preference: FilledAverPrice then Price
+        exec_price = None
+        if 'FilledAverPrice' in obj and obj.get('FilledAverPrice') is not None:
+            try:
+                exec_price = float(obj.get('FilledAverPrice'))
+            except Exception:
+                exec_price = None
+        elif 'Price' in obj and obj.get('Price') is not None:
+            try:
+                exec_price = float(obj.get('Price'))
+            except Exception:
+                exec_price = None
+
+        # commission fields
+        commission_value = 0.0
+        if 'CommissionChargeValue' in obj and obj.get('CommissionChargeValue') is not None:
+            try:
+                commission_value = float(obj.get('CommissionChargeValue') or 0.0)
+            except Exception:
+                commission_value = 0.0
+
+        commission_coin = obj.get('CommissionCoin') if 'CommissionCoin' in obj else None
+        commission_percent = obj.get('CommissionPercent') if 'CommissionPercent' in obj else None
+        side = obj.get('Side') if 'Side' in obj else None
+
+        return {
+            'order_id': order_id,
+            'status': status,
+            'original_quantity': orig_qty,
+            'filled_quantity': filled_qty,
+            'exec_price': exec_price,
+            'commission_value': commission_value,
+            'commission_coin': commission_coin,
+            'commission_percent': commission_percent,
+            'side': side,
+            'raw': obj,
+        }
+
     def execute_order(self, coin: str, side: str, quantity: float, price: Optional[float] = None,
                       order_type: Optional[str] = None, strategy_id: str = None, stop_loss: float = None,
                       take_profit: float = None) -> Dict:
@@ -59,10 +126,9 @@ class ExecutionEngine:
         下单接口（策略层主要调用此方法）
         
         此方法会：
-        1. 自动获取币种锁（防止重复下单）
-        2. 调用交易所 API 下单
-        3. 根据成交情况处理（完全成交/部分成交/未成交）
-        4. 返回下单结果
+        1. 调用交易所 API 下单
+        2. 根据成交情况处理（完全成交/部分成交/未成交）
+        3. 返回下单结果
         
         参数：
             coin: 币种代码，例如 'BTC', 'ETH'
@@ -73,7 +139,7 @@ class ExecutionEngine:
                 - 如果提供 price，则使用 LIMIT 订单
             order_type: 订单类型（可选），'MARKET' 或 'LIMIT'
                 - 不提供时自动判断（有价格 -> LIMIT，无价格 -> MARKET）
-            strategy_id: 策略 ID（必须提供），用于锁定币种
+            strategy_id: 策略 ID（必须提供），用于订单归属追踪
             stop_loss: 止损价格（可选）
             take_profit: 止盈价格（可选）
         
@@ -112,8 +178,8 @@ class ExecutionEngine:
         返回示例 - 失败：
             {
                 'success': False,
-                'error': 'coin_locked',
-                'message': 'Coin BTC is locked by another strategy'
+                'error': 'order_failed',
+                'message': 'Order placement failed'
             }
         
         使用示例：
@@ -136,14 +202,7 @@ class ExecutionEngine:
                 print(f"下单失败: {result['message']}")
         """
 
-        # 从 portfolio 获取币种锁
-        try:
-            acquired = self.portfolio.acquire_coin(coin, strategy_id)
-        except Exception as e:
-            return {'success': False, 'error': 'acquire_error', 'message': str(e)}
-
-        if not acquired:
-            return {'success': False, 'error': 'coin_locked', 'message': f'Coin {coin} is locked by another strategy'}
+        # 策略层已自行管理币种所有权；执行层不再做应用级币种锁控制
 
         # 确定 order_type 的默认值
         if order_type is None:
@@ -153,61 +212,38 @@ class ExecutionEngine:
         try:
             result = self.client.place_order(coin, side, quantity, price=price, order_type=order_type)
         except Exception as e:
-            # 发生异常时释放锁
-            try:
-                self.portfolio.release_coin(coin, strategy_id=strategy_id)
-            except Exception:
-                pass
             return {'success': False, 'error': 'client_exception', 'message': str(e)}
 
         if not result or not isinstance(result, dict) or not result.get('Success'):
-            # 下单失败时释放锁
-            try:
-                self.portfolio.release_coin(coin, strategy_id=strategy_id)
-            except Exception:
-                pass
             return {'success': False, 'error': 'order_failed', 'message': 'Order placement failed', 'raw': result}
 
         # 成功时，提取有用字段并登记
-        order_id = None
-        status = None
-        filled_qty = 0.0
-        orig_qty = quantity
-        exec_price = None
-        commission_coin = None
-        commission_value = 0.0
-        commission_percent = None
+        # Parse canonical OrderDetail / OrderMatched using strict parser
+        try:
+            parsed = None
+            if isinstance(result, dict):
+                od = result.get('OrderDetail')
+                if isinstance(od, dict):
+                    parsed = self._parse_order_obj(od)
+                else:
+                    om = result.get('OrderMatched')
+                    if isinstance(om, list) and len(om) > 0 and isinstance(om[0], dict):
+                        parsed = self._parse_order_obj(om[0])
 
-        # 尝试从 OrderDetail 容器中读取（按 API 文档）
-        if isinstance(result, dict):
-            od = result.get('OrderDetail')
-            if isinstance(od, dict):
-                order_id = od.get('OrderID') or od.get('order_id')
-                status = od.get('Status') or od.get('status')
-                filled_qty = od.get('FilledQuantity') or od.get('FilledQty') or od.get('filled_qty') or 0
-                exec_price = od.get('FilledAverPrice') or od.get('Price') or price
-                # 提取原始数量以计算剩余量
-                orig_qty = od.get('Quantity') or od.get('quantity') or quantity
-                # 提取手续费信息（若有）
-                commission_coin = od.get('CommissionCoin') or od.get('commission_coin')
-                commission_value = od.get('CommissionChargeValue') if od.get('CommissionChargeValue') is not None else od.get('commission_charge_value')
-                commission_percent = od.get('CommissionPercent') or od.get('commission_percent')
-                # 规范化为数值
-                try:
-                    commission_value = float(commission_value) if commission_value is not None else 0.0
-                except Exception:
-                    commission_value = 0.0
+            if parsed is None:
+                return {'success': False, 'error': 'non_conforming_response', 'message': 'Response missing canonical OrderDetail or OrderMatched objects', 'raw': result}
+        except self.NonConformingRoostooResponse as e:
+            return {'success': False, 'error': 'non_conforming_response', 'message': str(e), 'raw': result}
 
-            # OrderMatched 列表回退
-            if not order_id and isinstance(result.get('OrderMatched'), list) and len(result.get('OrderMatched')) > 0:
-                first = result.get('OrderMatched')[0]
-                order_id = first.get('OrderID') or first.get('order_id')
-                status = status or first.get('Status') or first.get('status')
-                filled_qty = filled_qty or first.get('FilledQuantity') or first.get('FilledQty') or first.get(
-                    'filled_qty') or 0
-                orig_qty = first.get('Quantity') or first.get('quantity') or quantity
-                if exec_price is None:
-                    exec_price = first.get('FilledAverPrice') or first.get('Price') or price
+        # Use parsed canonical fields
+        order_id = parsed.get('order_id')
+        status = parsed.get('status')
+        filled_qty = parsed.get('filled_quantity', 0.0)
+        orig_qty = parsed.get('original_quantity', quantity)
+        exec_price = parsed.get('exec_price') if parsed.get('exec_price') is not None else price
+        commission_coin = parsed.get('commission_coin')
+        commission_value = parsed.get('commission_value', 0.0)
+        commission_percent = parsed.get('commission_percent')
 
         try:
             filled_qty = float(filled_qty or 0.0)
@@ -232,27 +268,13 @@ class ExecutionEngine:
             order_id_str = str(order_id) if order_id is not None else None
 
             # 完全成交的情况：status==FILLED 或 剩余量为 0
-            # 在这种情况下，注册执行并释放锁
+            # 在这种情况下，注册执行
             if st == 'FILLED' or remaining_qty <= 0.001:  # 允许 0.001 的浮点误差
                 self.portfolio.register_order_execution(coin, strategy_id, side, filled_qty or quantity,
                                                         exec_price,
                                                         fee_amount=(commission_value if 'commission_value' in locals() else 0.0),
                                                         fee_currency=(commission_coin if 'commission_coin' in locals() else None),
                                                         fee_percent=(commission_percent if 'commission_percent' in locals() else None))
-                # 立即设置策略参数（若策略所有者不匹配可能抛出）
-                try:
-                    if stop_loss is not None or take_profit is not None:
-                        self.portfolio.set_strategy_params(coin, strategy_id, stop_loss, take_profit)
-                except Exception:
-                    # Do not fail execution if setting params fails
-                    self.logger.exception('Failed to set strategy params after filled order')
-
-                # 注册执行会释放锁（portfolio.register_order_execution）
-                # 这里额外尝试不会造成问题，因为 release_coin 检查所有权
-                try:
-                    self.portfolio.release_coin(coin, strategy_id=strategy_id)
-                except Exception:
-                    pass
 
                 # If this order was previously indexed as pending (defensive), remove it
                 if order_id_str:
@@ -265,31 +287,8 @@ class ExecutionEngine:
                         'remaining_qty': 0.0, 'raw': result}
 
             # 部分成交的情况（有一些成交但还有剩余）
-            # 注册已成交部分，但保持锁定并将订单加入待处理队列
+            # 仅更新待处理队列，组合账本仅在完全成交时更新
             elif filled_qty > 0.0 and remaining_qty > 0.001:
-                # 注册已成交部分（包含手续费信息，如果 API 提供）
-                self.portfolio.register_order_execution(coin, strategy_id, side, filled_qty, exec_price,
-                                                        fee_amount=(commission_value if 'commission_value' in locals() else 0.0),
-                                                        fee_currency=(commission_coin if 'commission_coin' in locals() else None),
-                                                        fee_percent=(commission_percent if 'commission_percent' in locals() else None))
-                
-                # 注意：register_order_execution 会检查所有权并释放锁
-                # 但对于部分成交，我们想保持锁定！
-                # 所以我们需要重新获取锁
-                reacquired = self.portfolio.acquire_coin(coin, strategy_id)
-                if not reacquired:
-                    # 如果重新获取失败（被其他策略抢占），记录警告但继续
-                    # 这是一个边界情况，可能不会经常发生
-                    self.logger.warning(
-                        f"Could not reacquire lock for {coin} after partial fill - another strategy may have taken it"
-                    )
-                
-                # 设置策略参数
-                if stop_loss is not None or take_profit is not None:
-                    try:
-                        self.portfolio.set_strategy_params(coin, strategy_id, stop_loss, take_profit)
-                    except Exception:
-                        self.logger.exception('Failed to set strategy params after partial fill')
 
                 # 将订单加入队列以供后续轮询
                 # 跟踪原始数量、已成交数量和剩余数量
@@ -308,17 +307,12 @@ class ExecutionEngine:
                         'raw': result
                     })
 
-                # 返回部分成交信息（保持锁）
+                # 返回部分成交信息
                 return {'success': True, 'order_id': order_id, 'status': status, 'filled_qty': filled_qty,
                         'remaining_qty': remaining_qty, 'queued': True, 'raw': result}
 
-            # 如果订单为 PENDING（挂单 / MAKER），将订单加入 pending_orders_queue，保持币种锁并设置策略参数
-            elif st == 'PENDING' or (isinstance(result.get('OrderDetail'), dict) and (
-                    result.get('OrderDetail', {}).get('Role') == 'MAKER')):
-                # 设置参数，便于监控在订单成交时采取动作
-                if stop_loss is not None or take_profit is not None:
-                    self.portfolio.set_strategy_params(coin, strategy_id, stop_loss, take_profit)
-
+            # 如果订单为 PENDING（挂单 / MAKER），将订单加入 pending_orders_queue 并设置策略参数
+            elif st == 'PENDING' or (parsed and parsed.get('raw', {}).get('Role') == 'MAKER'):
                 # 将订单加入队列以供后续轮询
                 # 跟踪原始数量和已成交数量
                 if order_id_str:
@@ -336,29 +330,14 @@ class ExecutionEngine:
                         'raw': result
                     })
 
-                # 返回已排队信息（保持锁）
+                # 返回已排队信息
                 return {'success': True, 'order_id': order_id, 'status': status, 'queued': True, 'raw': result}
 
             else:
-                # 其他状态（REJECTED/FAILED/UNKNOWN）：释放锁以避免死锁
-                try:
-                    if stop_loss is not None or take_profit is not None:
-                        self.portfolio.set_strategy_params(coin, strategy_id, stop_loss, take_profit)
-                except Exception:
-                    pass
-                try:
-                    self.portfolio.release_coin(coin, strategy_id=strategy_id)
-                except Exception:
-                    pass
-
                 return {'success': False, 'order_id': order_id, 'status': status, 'raw': result}
 
         except Exception as e:
-            # 登记或后处理出错：释放锁并返回失败
-            try:
-                self.portfolio.release_coin(coin, strategy_id=strategy_id)
-            except Exception:
-                pass
+            # 登记或后处理出错
             return {'success': False, 'error': 'post_registration_failed', 'message': str(e), 'order_id': order_id,
                     'raw': result}
 
@@ -470,8 +449,8 @@ class ExecutionEngine:
         
         说明：
         - 如果订单被完全成交，自动注册执行并从待处理队列移除
-        - 如果订单部分成交，更新待处理队列中的元数据，保持锁定
-        - 如果订单被取消，释放锁并移除出队列
+        - 如果订单部分成交，更新待处理队列中的元数据
+        - 如果订单被取消，从待处理队列移除
         
         参数：
             response: 交易所返回的查询响应，应包含 OrderMatched 或 OrderDetail 字段
@@ -545,22 +524,21 @@ class ExecutionEngine:
             entries.append(response.get('OrderDetail'))
 
         for e in entries:
-            oid = e.get('OrderID') or e.get('order_id')
-            if oid is None:
-                continue
-            oid_s = str(oid)
-            status = (e.get('Status') or e.get('status') or '').upper()
-            filled = e.get('FilledQuantity') or e.get('FilledQty') or e.get('filled_qty') or 0
-            orig_qty = e.get('Quantity') or e.get('quantity') or 0
-            
+            # Use strict parser for each entry
             try:
-                filled = float(filled or 0)
-                orig_qty = float(orig_qty or 0)
-            except Exception:
-                filled = 0.0
-                orig_qty = 0.0
+                parsed = self._parse_order_obj(e)
+            except self.NonConformingRoostooResponse:
+                # Skip non-conforming entries but record a processed entry indicating non-conformance
+                oid = e.get('OrderID') or e.get('order_id')
+                oid_s = str(oid) if oid is not None else 'unknown'
+                processed.append({'order_id': oid_s, 'status': None, 'processed': False, 'reason': 'non_conforming_entry'})
+                continue
 
-            remaining = max(0.0, orig_qty - filled)
+            oid_s = str(parsed.get('order_id'))
+            status = (parsed.get('status') or '').upper()
+            filled = parsed.get('filled_quantity', 0.0)
+            orig_qty = parsed.get('original_quantity', 0.0)
+            remaining = max(0.0, (orig_qty or 0.0) - (filled or 0.0))
 
             # 检查这个订单是否在我们的待处理列表中
             with self._pq_lock:
@@ -573,50 +551,34 @@ class ExecutionEngine:
                 except Exception:
                     coin, strat = key, None
 
-                side = e.get('Side') or e.get('side') or 'BUY'
-                price = e.get('FilledAverPrice') or e.get('Price') or 0.0
+                side = parsed.get('side') or 'BUY'
+                price = parsed.get('exec_price') or 0.0
 
                 # 读取当前我们记录的 pending 元数据（如果存在）
                 pending_meta = self._get_pending_order_meta(oid_s)
 
-                # 计算已成交的增量 (delta)
-                prev_filled = 0.0
-                if pending_meta:
-                    prev_filled = float(pending_meta.get('filled_quantity', 0.0) or 0.0)
-
-                newly_filled = max(0.0, filled - prev_filled)
-
                 # 提取手续费信息（如果存在）
-                commission_coin = e.get('CommissionCoin') or e.get('commission_coin') or None
-                commission_value = e.get('CommissionChargeValue') or e.get('commissionchargevalue') or e.get('CommissionChargeValue'.lower()) or 0.0
-                commission_percent = e.get('CommissionPercent') or e.get('commission_percent') or None
+                commission_coin = parsed.get('commission_coin')
+                commission_value = parsed.get('commission_value', 0.0)
+                commission_percent = parsed.get('commission_percent')
                 try:
                     commission_value = float(commission_value or 0.0)
                 except Exception:
                     commission_value = 0.0
-                prev_commission = 0.0
-                if pending_meta:
-                    try:
-                        prev_commission = float(pending_meta.get('commission_value', 0.0) or 0.0)
-                    except Exception:
-                        prev_commission = 0.0
-                commission_delta = max(0.0, commission_value - prev_commission)
 
                 # 情况 1：订单完全成交（remaining <= 0.001 或 status == FILLED）
                 if remaining <= 0.001 or status == 'FILLED':
                     try:
-                        # 如果有之前部分已登记，仅注册未登记的增量
-                        if newly_filled > 0:
-                            self.portfolio.register_order_execution(coin, strat, side, newly_filled, price,
-                                                                    fee_amount=commission_delta,
-                                                                    fee_currency=commission_coin,
-                                                                    fee_percent=commission_percent)
-                        # 如果没有增量但仍认为已完成（edge case），尝试注册整个已成交量以保证一致性
-                        elif not pending_meta:
-                            self.portfolio.register_order_execution(coin, strat, side, filled, price,
-                                                                    fee_amount=commission_value,
-                                                                    fee_currency=commission_coin,
-                                                                    fee_percent=commission_percent)
+                        booked_qty = filled
+                        if booked_qty <= 0.0 and pending_meta:
+                            booked_qty = float(pending_meta.get('original_quantity', 0.0) or 0.0)
+                        if booked_qty <= 0.0:
+                            booked_qty = float(orig_qty or 0.0)
+                        # 仅在完全成交时更新组合账本
+                        self.portfolio.register_order_execution(coin, strat, side, booked_qty, price,
+                                                                fee_amount=commission_value,
+                                                                fee_currency=commission_coin,
+                                                                fee_percent=commission_percent)
                     except Exception:
                         self.logger.exception(f"Failed to register_order_execution for {oid_s}")
 
@@ -638,13 +600,7 @@ class ExecutionEngine:
                 # 情况 2：订单部分成交（0 < filled < orig_qty，且 remaining > 0.001）
                 elif filled > 0.0 and remaining > 0.001:
                     try:
-                        # 仅注册未登记的增量
-                        if newly_filled > 0:
-                            self.portfolio.register_order_execution(coin, strat, side, newly_filled, price,
-                                                                    fee_amount=commission_delta,
-                                                                    fee_currency=commission_coin,
-                                                                    fee_percent=commission_percent)
-                        # 更新待处理订单的元数据（累计已成交量）
+                        # 仅更新待处理订单的元数据（累计已成交量）
                         self._update_pending_order_by_id(oid_s, {
                             'filled_quantity': filled,
                             'remaining_quantity': remaining,
@@ -667,12 +623,7 @@ class ExecutionEngine:
 
                 # 情况 3：订单被取消或其他状态，暂不处理
                 elif status == 'CANCELED':
-                    # 可选：取消订单，释放锁
-                    try:
-                        self.portfolio.release_coin(coin, strategy_id=strat, force=False)
-                    except Exception:
-                        self.logger.exception(f"Failed to release lock for {coin} after cancel")
-                    
+
                     try:
                         self._remove_pending_order_by_id(oid_s)
                     except Exception:
