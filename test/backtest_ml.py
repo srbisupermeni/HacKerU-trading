@@ -257,11 +257,11 @@ if __name__ == "__main__":
     # 1. 训练近 60 天数据
     strategy.train_models(days_back=60)
     
-    # 2. 拉取最近 10 天的 5m 级别数据进行演习
-    print("\n⏳ 正在拉取近 10 天的数据进行实盘推演...")
+    # 2. 拉取最近 15 天的 5m 级别数据进行演习
+    print("\n⏳ 正在拉取近 15 天的数据进行实盘推演...")
     fetcher = VisionFetcher()
     end_date = datetime.today()
-    start_date = end_date - timedelta(days=10)
+    start_date = end_date - timedelta(days=15)
     
     sim_df = fetcher.fetch_klines_range(
         symbol="BTCUSDT", interval="5m", 

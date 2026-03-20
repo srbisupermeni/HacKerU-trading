@@ -1,316 +1,380 @@
 import sys
-import time
 import logging
-import numpy as np
-import pandas as pd
+import pickle
 from datetime import datetime, timedelta
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
+from collections import Counter
 
-# 导入机器学习核心库
+import numpy as np
+import pandas as pd
 import lightgbm as lgb
 import xgboost as xgb
+from sklearn.metrics import roc_auc_score
 
-# ==========================================
-# 路径兼容处理：确保在 AWS/Docker 容器内运行时，
-# 能够正确识别项目根目录，避免 ModuleNotFoundError
-# ==========================================
+# ============================================================
+# 路径与外部模块导入
+# ============================================================
 ROOT = Path(__file__).resolve().parent.parent.parent
 if str(ROOT) not in sys.path:
     sys.path.append(str(ROOT))
 
-# 导入项目内的自定义组件
 from database.Binance_Vision_fetcher import VisionFetcher
-from database.Binance_fetcher import BinanceDataFetcher
 from bot.data.feature_engineering import FeatureEngineer
 from bot.portfolio.portfolio import Portfolio
 from bot.execution.execution_engine import ExecutionEngine
 from bot.execution.roostoo import Roostoo
 
+# ============================================================
+# 全局参数区 (商赛实战配置)
+# ============================================================
+INITIAL_CAPITAL = 10_000.0          
+BACKTEST_DAYS = 20                  
+TRAIN_DAYS = 60                     
+TOTAL_FETCH_DAYS = BACKTEST_DAYS + TRAIN_DAYS + 2  
+BAR_INTERVAL = "5m"                 
+FEE_RATE = 0.001                    
+SLIPPAGE = 0.0005                   
+MAX_POSITIONS = 3                   
+MAX_CAPITAL_USAGE = 0.50            
+MIN_ORDER_USD = 10.0                
+BTC_TREND_LOOKBACK_BARS = 288       
+BTC_TREND_SHIFT_BARS = 12           
+MIN_ATR_PCT = 0.0015                
+
+COIN_GROUPS = {
+    "meme": ["PEPE", "DOGE", "WIF"],
+    "layer1": ["SOL", "APT", "SUI", "NEAR"],
+    "ai": ["FET"],
+    "btc": ["BTC"]
+}
+
+# 🟢 修复 4：Meme 板块严格降杠杆，最多只允许持有一个，拒绝相关性灾难！
+GROUP_LIMITS = {
+    "meme": 1,
+    "layer1": 2,
+    "ai": 1,
+    "btc": 1
+}
+
+def get_group(coin_name, groups=COIN_GROUPS):
+    for group, coins in groups.items():
+        if coin_name in coins: return group
+    return "other"
+
+CACHE_DIR = ROOT / "data_cache"
+CACHE_DIR.mkdir(exist_ok=True)
+
+# ============================================================
+# 数据工具函数
+# ============================================================
+def fetch_with_cache(symbol: str, interval: str, start_date: datetime, end_date: datetime) -> pd.DataFrame:
+    cache_key = f"{symbol}_{interval}_{start_date:%Y%m%d%H}_{end_date:%Y%m%d%H}"
+    cache_file = CACHE_DIR / f"{cache_key}.pkl"
+    if cache_file.exists():
+        try:
+            with open(cache_file, "rb") as f: return pickle.load(f)
+        except: pass
+    fetcher = VisionFetcher()
+    df = fetcher.fetch_klines_range(symbol=symbol, interval=interval,
+        start_year=start_date.year, start_month=start_date.month, start_day=start_date.day,
+        end_year=end_date.year, end_month=end_date.month, end_day=end_date.day, data_type="daily")
+    if df is not None and not df.empty:
+        with open(cache_file, "wb") as f: pickle.dump(df, f)
+    return df
+
+def normalize_kline_df(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty: return None
+    out = df.copy()
+    out["open_time"] = pd.to_datetime(out["open_time"])
+    out = out.sort_values("open_time").drop_duplicates(subset=["open_time"])
+    numeric_cols = ["open", "high", "low", "close", "volume", "buy_volume", "sell_volume"]
+    for col in numeric_cols:
+        if col in out.columns: out[col] = pd.to_numeric(out[col], errors="coerce")
+    out = out.set_index("open_time", drop=False)
+    out.index.name = "timestamp_idx" 
+    return out
+
+def align_market_data_flexible(sim_data: dict) -> dict:
+    if "BTC" not in sim_data: return {}
+    btc_norm = normalize_kline_df(sim_data["BTC"])
+    main_index = btc_norm.index
+    aligned = {"BTC": btc_norm.reset_index(drop=True)}
+    for coin, df in sim_data.items():
+        if coin == "BTC": continue
+        df_norm = normalize_kline_df(df)
+        if df_norm is not None:
+            aligned[coin] = df_norm.reindex(main_index).reset_index(drop=True)
+    return aligned
+
+def smart_quantity(invest_usd: float, price: float) -> float:
+    if price <= 0: return 0.0
+    qty = invest_usd / price
+    if price < 0.0001: return round(qty, 0)
+    if price < 0.01: return round(qty, 2)
+    if price < 1: return round(qty, 4)
+    return round(qty, 6)
+
+def smart_price(price: float) -> float:
+    if price < 0.0001: return round(price, 8)
+    if price < 0.01: return round(price, 6)
+    return round(price, 4)
+
+# ============================================================
+# 策略类：交易指标加权 + 严格数据隔离
+# ============================================================
 class DualMLStrategy:
-    """
-    多币种适配版：双模型机器学习量化策略 (5m 级别)
-    
-    【模块定位】
-    本类是单个币种的“专属大脑”。如果在 main.py 中跑 3 个币，就会实例化 3 个本类的对象。
-    它负责：
-    1. 启动时拉取该币种专属的历史数据，训练 LightGBM 和 XGBoost。
-    2. 实盘中每 5 分钟接收一次最新数据，输出上涨概率（胜率）。
-    3. 根据胜率和当前持仓状态，向 ExecutionEngine 发送买入指令或强平警报。
-    """
-    def __init__(self, portfolio: Portfolio, execution: ExecutionEngine, 
-                 symbol="BTCUSDT", coin="BTC", strategy_id="ml_dual_01", alloc_ratio=0.30):
-        # 资产管家与执行引擎
+    def __init__(self, portfolio: Portfolio, execution: ExecutionEngine,
+                 symbol: str = "BTCUSDT", coin: str = "BTC", strategy_id: str = "ml_dual_01"):
         self.portfolio = portfolio
         self.execution = execution
+        self.symbol = symbol
+        self.coin = coin
+        self.strategy_id = strategy_id
         
-        self.symbol = symbol          # 币安数据对，如 SOLUSDT
-        self.coin = coin              # Roostoo下单币种，如 SOL
-        self.strategy_id = strategy_id # 策略唯一标识符，用于 portfolio 记账
-        
-        # 🧨 多币种关键参数：资金分配率。0.30 代表本策略每次只动用账户总资金的 30%
-        # 这样即使 3 个币同时出信号，也能保证有足够的余额下单。
-        self.alloc_ratio = alloc_ratio 
-        
-        # 为不同币种配置独立的日志，方便在 AWS 上排查问题
-        self.logger = logging.getLogger(f"DualML_{self.coin}")
-        self.logger.setLevel(logging.INFO)
-        if not self.logger.handlers:
-            ch = logging.StreamHandler()
-            ch.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
-            self.logger.addHandler(ch)
-
-        # ==========================================
-        # 🏆 比赛专属优化参数 (基于 5m 级别刮头皮优化得出)
-        # ==========================================
-        self.conf_thresh = 0.663   # 极高胜率狙击门槛，双模型认为上涨概率 > 66.3% 才开仓
-        self.sl_pct = 0.019        # 1.9% 宽止损，防止 5m 级别的上下影线“插针”扫损
-        self.tp_pct = 0.024        # 2.4% 波段止盈
-        
+        # 差分阈值：只接受极高确定性的异动
+        coin_group = get_group(coin)
+        if coin_group == "meme":
+            self.conf_thresh = 1.20   
+        else:
+            self.conf_thresh = 0.85   
+            
         self.engineer = FeatureEngineer()
-        self.lgb_model = None
-        self.xgb_model = None
+        self.lgb_model, self.xgb_model = None, None
         self.feature_cols = None
         self.is_trained = False
+        self.weight_lgb, self.weight_xgb = 0.5, 0.5
+        self.latest_features = {}
+        self.val_prob_mean, self.val_prob_std = 0.5, 0.1
+        self.latest_raw_prob, self.latest_score = 0.0, 0.0
 
-    def train_models(self, days_back=60, train_end_days_ago=0):
-        """
-        【初始化训练阶段】
-        增加了 train_end_days_ago 参数，用于在回测时隔离测试集，防止偷看未来数据。
-        """
-        self.logger.info(f"🧠 开始拉取 {self.symbol} 历史数据进行专模训练...")
-        
-        fetcher = VisionFetcher()
-        # 🧨 核心修复：训练数据的结束时间，必须在测试数据的开始时间之前！
-        end_date = datetime.today() - timedelta(days=train_end_days_ago)
-        start_date = end_date - timedelta(days=days_back)
-        
-        df_history = fetcher.fetch_klines_range(
-            symbol=self.symbol, interval="5m", 
-            start_year=start_date.year, start_month=start_date.month, start_day=start_date.day,
-            end_year=end_date.year, end_month=end_date.month, end_day=end_date.day,
-            data_type="daily" 
-        )
-        
-        if df_history is None or df_history.empty:
-            self.logger.error(f"[{self.symbol}] 数据拉取失败，无法训练模型！")
-            return False
+    def _get_trading_strength(self, y_true, y_prob, returns):
+        try:
+            threshold = np.percentile(y_prob, 90)
+            top_mask = y_prob >= threshold
+            if not np.any(top_mask): return 1e-6
+            avg_ret = np.mean(returns[top_mask])
+            return max(avg_ret, 1e-6)
+        except: return 1e-6
 
-        df = self.engineer.generate_features(df_history)
-        target_lookback = 6 
+    def train_models_from_df(self, df_history: pd.DataFrame) -> bool:
+        df_feat = self.engineer.generate_features(df_history)
+        if df_feat is None or df_feat.empty: return False
         
-        exclude_cols = [
-            'open_time', 'close_time', 'close', 'open', 'high', 'low', 'volume',
-            'buy_volume', 'sell_volume', f'target_return_{target_lookback}', 'target_class'
-        ]
-        self.feature_cols = [col for col in df.columns if col not in exclude_cols]
+        target_col = 'target_return_12'
+        exclude_cols = ["open_time","close_time","close","open","high","low","volume",
+                        "buy_volume","sell_volume",target_col,"target_class","sma_20","rsi_14","atr_14"]
         
-        mask = ~(df[self.feature_cols].isna().any(axis=1) | df['target_class'].isna())
-        df_clean = df[mask].copy()
+        self.feature_cols = [c for c in df_feat.columns if c not in exclude_cols]
+        mask = ~(df_feat[self.feature_cols].isna().any(axis=1) | df_feat["target_class"].isna())
+        df_clean = df_feat.loc[mask].copy()
         
-        X_train = df_clean[self.feature_cols]
-        y_train = df_clean['target_class']
-        
-        self.logger.info(f"[{self.symbol}] 训练集数据量: {len(X_train)}，开始训练...")
-        lgb_params = {'objective': 'binary', 'metric': 'auc', 'learning_rate': 0.05, 'max_depth': 7, 'verbose': -1}
-        lgb_train = lgb.Dataset(X_train, label=y_train)
-        self.lgb_model = lgb.train(lgb_params, lgb_train, num_boost_round=150)
-        
-        xgb_train = xgb.DMatrix(X_train, label=y_train)
-        xgb_params = {'objective': 'binary:logistic', 'eval_metric': 'auc', 'max_depth': 7, 'learning_rate': 0.05}
-        self.xgb_model = xgb.train(xgb_params, xgb_train, num_boost_round=150)
-        
+        split_idx = int(len(df_clean) * 0.8)
+        purge_bars = 12 
+        if split_idx + purge_bars >= len(df_clean): return False
+
+        X_tr, y_tr = df_clean[self.feature_cols].iloc[:split_idx], df_clean["target_class"].iloc[:split_idx]
+        X_val, y_val = df_clean[self.feature_cols].iloc[split_idx + purge_bars:], df_clean["target_class"].iloc[split_idx + purge_bars:]
+        val_returns = df_clean[target_col].iloc[split_idx + purge_bars:].values
+
+        lgb_params = {"objective": "binary", "metric": "auc", "learning_rate": 0.03, "max_depth": 6, "lambda_l2": 3.0, "verbose": -1}
+        self.lgb_model = lgb.train(lgb_params, lgb.Dataset(X_tr, label=y_tr), num_boost_round=400,
+                                   valid_sets=[lgb.Dataset(X_val, label=y_val)],
+                                   callbacks=[lgb.early_stopping(50, verbose=False), lgb.log_evaluation(0)])
+
+        xgb_params = {"objective": "binary:logistic", "eval_metric": "auc", "max_depth": 5, "eta": 0.03, "lambda": 3.0}
+        self.xgb_model = xgb.train(xgb_params, xgb.DMatrix(X_tr, label=y_tr), num_boost_round=400,
+                                   evals=[(xgb.DMatrix(X_val, label=y_val), "v")], early_stopping_rounds=50, verbose_eval=False)
+
+        p_lgb = self.lgb_model.predict(X_val, num_iteration=self.lgb_model.best_iteration)
+        p_xgb = self.xgb_model.predict(xgb.DMatrix(X_val), iteration_range=(0, self.xgb_model.best_iteration + 1))
+
+        s_lgb = self._get_trading_strength(y_val, p_lgb, val_returns)
+        s_xgb = self._get_trading_strength(y_val, p_xgb, val_returns)
+        self.weight_lgb, self.weight_xgb = s_lgb/(s_lgb+s_xgb), s_xgb/(s_lgb+s_xgb)
+
+        ensemble_v = p_lgb * self.weight_lgb + p_xgb * self.weight_xgb
+        self.val_prob_mean, self.val_prob_std = float(np.mean(ensemble_v)), float(np.std(ensemble_v) + 1e-9)
         self.is_trained = True
-        self.logger.info(f"✅ [{self.symbol}] 模型训练完毕！")
         return True
 
     def predict_signal(self, recent_df: pd.DataFrame) -> float:
-        """
-        【实时推理阶段】
-        传入最新的 K 线窗口，提取最后一行特征，输出预测胜率。
-        """
-        if not self.is_trained:
-            return 0.0
-            
-        features_df = self.engineer.generate_features(recent_df)
-        if features_df.empty:
-            return 0.0
-            
-        latest_features = features_df.iloc[-1:][self.feature_cols]
-        if latest_features.isna().any(axis=1).iloc[0]:
-            return 0.0 
-            
-        # 集成学习：LGB 和 XGB 概率求平均，提升稳定性
-        prob_lgb = self.lgb_model.predict(latest_features)[0]
-        prob_xgb = self.xgb_model.predict(xgb.DMatrix(latest_features))[0]
-        return float((prob_lgb + prob_xgb) / 2.0)
-
-    def on_new_candle(self, recent_df: pd.DataFrame, current_price: float):
-        """
-        【实盘决策核心】
-        主程序 (main.py) 获取到新 K 线后调用此方法。执行推断并决定买入或强平。
-        """
-        prob = self.predict_signal(recent_df)
-        lock_status = self.portfolio.get_coin_lock_status(self.coin)
-        
-        # 场景 A：空仓状态，寻找买点
-        if not lock_status['locked']:
-            if prob > self.conf_thresh:
-                self.logger.info(f"🎯 [{self.coin} 狙击时刻] 胜率: {prob:.4f} > {self.conf_thresh}")
-                
-                # 分配指定比例的资金 (如 30%)
-                invest_amount = self.portfolio.account_balance * self.alloc_ratio
-                quantity = round(invest_amount / current_price, 4)
-                
-                sl_price = round(current_price * (1 - self.sl_pct), 4)
-                tp_price = round(current_price * (1 + self.tp_pct), 4)
-                
-                self.logger.info(f"🚀 [{self.coin}] 发送买单: 数量 {quantity} | 止损: {sl_price}, 止盈: {tp_price}")
-                
-                res = self.execution.execute_order(
-                    coin=self.coin, side='BUY', quantity=quantity, 
-                    price=current_price, order_type='LIMIT', 
-                    strategy_id=self.strategy_id, stop_loss=sl_price, take_profit=tp_price
-                )
-                
-                if res.get('success'):
-                    self.logger.info(f"✅ 订单提交成功，单号: {res.get('order_id')}")
-                else:
-                    self.logger.error(f"❌ 订单提交失败: {res.get('message')}")
-                    
-        # 场景 B：持仓状态，AI 风控盯盘
-        else:
-            # 如果上涨概率骤降到 20% 以下，说明跌的概率高达 80%，极度危险！
-            if prob < 0.20:
-                self.logger.warning(f"⚠️ [{self.coin} AI 警报] 趋势极度恶化 (胜率仅 {prob:.4f})，注意强平风险！")
+        if not self.is_trained or recent_df.empty: return 0.0
+        feat_df = self.engineer.generate_features(recent_df)
+        if feat_df is None or feat_df.empty: return 0.0
+        self.latest_features = feat_df.iloc[-1].to_dict()
+        X = feat_df.iloc[-1:][self.feature_cols]
+        if X.isna().any(axis=1).iloc[0]: return 0.0
+        p_l = self.lgb_model.predict(X, num_iteration=self.lgb_model.best_iteration)[0]
+        p_x = self.xgb_model.predict(xgb.DMatrix(X), iteration_range=(0, self.xgb_model.best_iteration+1))[0]
+        self.latest_raw_prob = float(p_l * self.weight_lgb + p_x * self.weight_xgb)
+        self.latest_score = (self.latest_raw_prob - self.val_prob_mean) / self.val_prob_std
+        return self.latest_score
 
 
-# ==========================================
-# 本地多币种并发推演测试区 (__main__)
-# ==========================================
-# ==========================================
-# 本地“多币种选秀”批量推演测试区 (__main__)
-# ==========================================
-# ==========================================
-# 本地“多币种选秀”批量推演测试区 (__main__)
-# ==========================================
+# ============================================================
+# 主程序：大师版回测循环
+# ============================================================
 if __name__ == "__main__":
-    print("\n" + "="*60)
-    print("🏆 严格样本外 (OOS) 多币种选秀大赛：寻找最强 3 币组合")
-    print("="*60)
-    
-    CANDIDATES = [
-        {"symbol": "ETHUSDT", "coin": "ETH"},
-        {"symbol": "SOLUSDT", "coin": "SOL"},
-        {"symbol": "DOGEUSDT", "coin": "DOGE"},
-        {"symbol": "PEPEUSDT", "coin": "PEPE"},
-        {"symbol": "WIFUSDT", "coin": "WIF"},
-        {"symbol": "SUIUSDT", "coin": "SUI"},
-        {"symbol": "APTUSDT", "coin": "APT"},
-        {"symbol": "NEARUSDT", "coin": "NEAR"}
-    ]
-    
-    leaderboard = []
-    
-    for item in CANDIDATES:
-        symbol = item['symbol']
-        coin = item['coin']
-        print(f"\n" + "-"*40)
-        print(f"🚀 正在盲测币种: {coin} (严格隔离未来数据)")
-        print("-"*40)
-        
-        roostoo_client = Roostoo()
-        portfolio = Portfolio(execution_module=None) 
-        portfolio.account_balance = 10000.0          
-        execution = ExecutionEngine(portfolio, roostoo_client)
-        portfolio.execution = execution 
-        
-        strat_id = f"ml_dual_{coin.lower()}"
-        strategy = DualMLStrategy(portfolio, execution, symbol=symbol, coin=coin, strategy_id=strat_id, alloc_ratio=0.85)
-        
-        # 🧨 核心修复：训练集只取到 10天前，严禁模型看到最近 10 天的答案！
-        success = strategy.train_models(days_back=60, train_end_days_ago=10)
-        if not success:
-            print(f"⚠️ {coin} 模型训练失败，跳过。")
-            continue
-            
-        # 测试集：最近的 10 天
-        fetcher = VisionFetcher()
-        end_date = datetime.today()
-        start_date = end_date - timedelta(days=10)
-        
-        sim_df = fetcher.fetch_klines_range(
-            symbol=symbol, interval="5m", 
-            start_year=start_date.year, start_month=start_date.month, start_day=start_date.day,
-            end_year=end_date.year, end_month=end_date.month, end_day=end_date.day,
-            data_type="daily"
-        )
-        
-        if sim_df is None or sim_df.empty:
-            print(f"⚠️ {coin} 测试数据拉取失败，跳过。")
-            continue
-            
-        balance = 10000.0
-        position_qty = 0.0
-        entry_price = 0.0
-        trades_count = 0
-        win_count = 0
-        window_size = 50 
-        
-        for i in range(window_size, len(sim_df)):
-            window_df = sim_df.iloc[i-window_size : i].copy()
-            curr_row = window_df.iloc[-1]
-            curr_price = curr_row['close']
-            curr_high = curr_row['high']
-            curr_low = curr_row['low']
-            
-            if position_qty > 0:
-                sl_price = entry_price * (1 - strategy.sl_pct)
-                tp_price = entry_price * (1 + strategy.tp_pct)
-                prob = strategy.predict_signal(window_df)
-                
-                exit_price = None
-                
-                if curr_low <= sl_price:
-                    exit_price = sl_price
-                elif curr_high >= tp_price:
-                    exit_price = tp_price
-                elif prob < 0.20:
-                    exit_price = curr_price
-                    
-                if exit_price:
-                    revenue = position_qty * exit_price * (1 - 0.001)
-                    if exit_price > entry_price:
-                        win_count += 1
-                    balance += revenue
-                    position_qty = 0.0
-                    trades_count += 1
-                    portfolio.force_release_coin(coin)
-                    
-            if position_qty == 0:
-                prob = strategy.predict_signal(window_df)
-                if prob > strategy.conf_thresh:
-                    invest = balance * strategy.alloc_ratio
-                    balance -= invest
-                    position_qty = (invest * (1 - 0.001)) / curr_price
-                    entry_price = curr_price
-                    portfolio.acquire_coin(coin, strategy.strategy_id)
-        
-        final_equity = balance + (position_qty * curr_price * (1 - 0.001)) if position_qty > 0 else balance
-        roi = (final_equity - 10000.0) / 10000.0 * 100
-        win_rate = (win_count / trades_count * 100) if trades_count > 0 else 0.0
-        
-        print(f"🏁 {coin} 盲测结束: ROI {roi:.2f}%, 交易次数 {trades_count}, 胜率 {win_rate:.1f}%")
-        
-        leaderboard.append({
-            "Coin": coin,
-            "ROI (%)": round(roi, 2),
-            "Trades": trades_count,
-            "Win Rate (%)": round(win_rate, 1)
-        })
+    print("\n" + "=" * 80 + "\n🏆 极高胜率狙击版：动态超时期 + 动量衰竭止损\n" + "=" * 80)
+    roostoo_client = Roostoo()
+    portfolio = Portfolio(None); portfolio.account_balance = INITIAL_CAPITAL
+    execution = ExecutionEngine(portfolio, roostoo_client); portfolio.execution = execution
 
-    print("\n" + "🏆"*20)
-    print("      严谨样本外盲测 10天推演 排行榜 (按 ROI 排序)")
-    print("🏆"*20)
-    leaderboard_sorted = sorted(leaderboard, key=lambda x: x["ROI (%)"], reverse=True)
-    df_leaderboard = pd.DataFrame(leaderboard_sorted)
-    print(df_leaderboard.to_string(index=False))
+    TARGET_COINS = [{"symbol": "BTCUSDT", "coin": "BTC"},{"symbol": "SOLUSDT", "coin": "SOL"},{"symbol": "DOGEUSDT", "coin": "DOGE"},
+                    {"symbol": "PEPEUSDT", "coin": "PEPE"},{"symbol": "WIFUSDT", "coin": "WIF"},{"symbol": "SUIUSDT", "coin": "SUI"},
+                    {"symbol": "APTUSDT", "coin": "APT"},{"symbol": "NEARUSDT", "coin": "NEAR"},{"symbol": "FETUSDT", "coin": "FET"}]
+
+    strategies = {item["coin"]: DualMLStrategy(portfolio, execution, item["symbol"], item["coin"]) for item in TARGET_COINS}
+
+    print(f"⏳ 并发拉取 {TOTAL_FETCH_DAYS} 天数据...")
+    end_dt = datetime.today()
+    start_dt = end_dt - timedelta(days=TOTAL_FETCH_DAYS)
+    sim_data_raw = {}
+    with ThreadPoolExecutor(max_workers=9) as exc:
+        futures = {exc.submit(fetch_with_cache, s["symbol"], "5m", start_dt, end_dt): s["coin"] for s in TARGET_COINS}
+        for f in futures:
+            coin, df = futures[f], f.result()
+            if df is not None: sim_data_raw[coin] = df
+
+    sim_data = align_market_data_flexible(sim_data_raw)
+    base_df = sim_data["BTC"]
+    test_bars, train_window_bars = BACKTEST_DAYS * 288, TRAIN_DAYS * 288
+    start_idx = len(base_df) - test_bars
+
+    positions = {c: {"qty": 0.0, "entry_price": 0.0, "entry_bar": 0, "sl_pct": 0.0, "tp_pct": 0.0, "invested_cash": 0.0, "entry_score": 0.0} for c in strategies}
+    trades_count, win_count, last_train_time = 0, 0, None
+    trade_pnls = []
+
+    for i in range(start_idx, len(base_df)):
+        curr_time = base_df.iloc[i]["open_time"]
+        
+        # 每日滚动重训
+        if last_train_time is None or (curr_time - last_train_time).total_seconds() >= 86400:
+            print(f"\n🔄 [{curr_time}] 触发机制：正在融合最新盘感重训模型...")
+            with ThreadPoolExecutor(max_workers=4) as exec:
+                exec.map(lambda c: strategies[c].train_models_from_df(sim_data[c].iloc[i-train_window_bars:i]), strategies)
+            last_train_time = curr_time
+            print(f"✅ 模型矩阵升级完毕，恢复交易巡航。\n")
+
+        btc_sma_now = base_df.iloc[i-288:i]["close"].mean()
+        btc_sma_prev = base_df.iloc[i-300:i-12]["close"].mean()
+        btc_multiplier = 1.0 if btc_sma_now > btc_sma_prev else 0.5
+
+        predictions = []
+        for coin, strat in strategies.items():
+            df = sim_data[coin]
+            if pd.isna(df.iloc[i]["open"]): continue 
+            score = strat.predict_signal(df.iloc[i-300:i].copy())
+            feat = strat.latest_features
+            
+            pos = positions[coin]
+            coin_group = get_group(coin)
+            
+            # 平仓逻辑
+            if pos["qty"] > 0:
+                curr_row = df.iloc[i]
+                sl_p, tp_p = pos["entry_price"]*(1-pos["sl_pct"]), pos["entry_price"]*(1+pos["tp_pct"])
+                exit_price, reason = None, ""
+                
+                bars_held = i - pos["entry_bar"]
+                entry_score = pos.get("entry_score", 0.0)
+                
+                # 🟢 修复 1：严格匹配 target_return_12 的模型视野
+                if coin_group == "meme": max_bars = 12
+                elif coin_group in ["layer1", "ai"]: max_bars = 18
+                else: max_bars = 24
+                
+                if curr_row["open"] <= sl_p: exit_price, reason = curr_row["open"]*(1-SLIPPAGE), "🛑 跳空止损"
+                elif curr_row["open"] >= tp_p: exit_price, reason = curr_row["open"]*(1-SLIPPAGE), "🎯 跳空止盈"
+                elif curr_row["low"] <= sl_p: exit_price, reason = sl_p*(1-SLIPPAGE), "🛑 常规止损"
+                elif curr_row["high"] >= tp_p: exit_price, reason = tp_p*(1-SLIPPAGE), "🎯 常规止盈"
+                
+                # 🟢 修复 2：真正的 Trailing Stop (动量衰减追踪)，注意使用 max()！
+                elif bars_held >= 3 and score < max(-1.2, entry_score - 1.5): 
+                    exit_price, reason = curr_row["open"]*(1-SLIPPAGE), "⚠️ AI动量衰竭强平"
+                elif bars_held >= max_bars: 
+                    exit_price, reason = curr_row["open"]*(1-SLIPPAGE), "⏰ 信号超时强平"
+                
+                if exit_price:
+                    rev = pos["qty"] * exit_price * (1-FEE_RATE)
+                    pnl = rev - pos["invested_cash"]
+                    trade_pnls.append(pnl)
+                    portfolio.account_balance += rev
+                    trades_count += 1
+                    if pnl > 0: win_count += 1
+                    print(f"[{curr_time}] 卖出 [{coin}] {reason} | 价: {smart_price(exit_price)} | 赚: ${pnl:.2f} | 余额: ${portfolio.account_balance:.2f}")
+                    positions[coin] = {"qty":0.0, "entry_price":0.0, "entry_bar":0, "sl_pct":0.0, "tp_pct":0.0, "invested_cash":0.0, "entry_score":0.0}
+            else:
+                atr_p = float(feat.get("atr_14", 0.0))
+                sma_p = (not pd.isna(feat.get("sma_20"))) and (df.iloc[i-1]["close"] > feat.get("sma_20"))
+                # 🟢 修复 8：移除 raw_prob > 0.5 的限制，全权交由 Z-Score 做纯粹的截面排序
+                if score > strat.conf_thresh and feat.get("rsi_14", 50) < 68 and sma_p and atr_p >= MIN_ATR_PCT:
+                    predictions.append({"coin":coin, "score":score, "price":df.iloc[i]["open"], "atr":atr_p})
+
+        active_cnt = sum(1 for p in positions.values() if p["qty"] > 0)
+        if active_cnt < MAX_POSITIONS and predictions:
+            predictions.sort(key=lambda x: x["score"], reverse=True)
+            group_counts = Counter(get_group(c, COIN_GROUPS) for c, p in positions.items() if p["qty"] > 0)
+            
+            current_gross_exposure = sum(p["qty"] * float(sim_data[c].iloc[i]["open"]) for c, p in positions.items() if p["qty"] > 0 and not pd.isna(sim_data[c].iloc[i]["open"]))
+            total_equity = portfolio.account_balance + current_gross_exposure
+            
+            # 🟢 修复 5：单笔上限防爆体系 (绝不允许一单吃掉 15% 以上本金)
+            per_trade_cap = total_equity * 0.15 
+            
+            target_exposure = total_equity * MAX_CAPITAL_USAGE
+            remaining_budget = target_exposure - current_gross_exposure
+            
+            for target in predictions:
+                if active_cnt >= MAX_POSITIONS or remaining_budget < MIN_ORDER_USD: break
+                coin, g = target["coin"], get_group(target["coin"], COIN_GROUPS)
+                if group_counts[g] >= GROUP_LIMITS.get(g, 1): continue
+                
+                # 计算基础可投资额，并施加 15% 的总权益硬上限
+                base_invest = float((remaining_budget / (MAX_POSITIONS - active_cnt)) * btc_multiplier)
+                invest = min(base_invest, per_trade_cap)
+                
+                if invest < MIN_ORDER_USD or portfolio.account_balance < invest: continue
+                
+                entry_p = float(target["price"] * (1 + SLIPPAGE))
+                target_notional = invest / (1 + FEE_RATE)
+                qty = float(smart_quantity(target_notional, entry_p))
+                actual_cost = qty * entry_p * (1 + FEE_RATE)
+                
+                portfolio.account_balance -= actual_cost
+                remaining_budget -= (qty * entry_p)
+                
+                positions[coin] = {"qty":qty, "entry_price":entry_p, "entry_bar":i, 
+                                   "sl_pct":float(np.clip(target["atr"]*2, 0.012, 0.028)), 
+                                   "tp_pct":float(np.clip(target["atr"]*3.5, 0.018, 0.045)),
+                                   "invested_cash": actual_cost,
+                                   "entry_score": float(target["score"])} 
+                group_counts[g] += 1; active_cnt += 1
+                print(f"[{curr_time}] 🟢 买入 [{coin}] ({g}) | Z: {target['score']:.2f} | 投入: ${actual_cost:.2f} | 价: {smart_price(entry_p)}")
+
+    print("\n" + "-"*40 + "\n🏁 回测主循环结束，执行尾盘强制清算...\n" + "-"*40)
+    for coin, pos in positions.items():
+        if pos["qty"] > 0:
+            last_price = float(sim_data[coin].iloc[-1]["close"])
+            final_exit_price = last_price * (1 - SLIPPAGE)
+            revenue = pos["qty"] * final_exit_price * (1 - FEE_RATE)
+            pnl = revenue - pos["invested_cash"]
+            trade_pnls.append(pnl)
+            if pnl > 0: win_count += 1
+            portfolio.account_balance += revenue
+            trades_count += 1
+            print(f"[END] 强制平仓 [{coin}] | 价: {smart_price(final_exit_price)} | 赚: ${pnl:.2f} | 余额: ${portfolio.account_balance:.2f}")
+
+    roi = (portfolio.account_balance - INITIAL_CAPITAL) / INITIAL_CAPITAL * 100
+    avg_pnl = float(np.mean(trade_pnls)) if trade_pnls else 0.0
+    
+    print(f"\n" + "="*70)
+    print(f"🏁 终极盲测战报 (MTM 结算版)")
+    print(f"初始本金: ${INITIAL_CAPITAL:.2f}")
+    print(f"总交易次数: {trades_count} 次")
+    print(f"胜率: {win_count/trades_count:.1%}" if trades_count else "胜率: 0.0%")
+    print(f"单笔平均 PnL: ${avg_pnl:.2f}")
+    print(f"最终净值: ${portfolio.account_balance:.2f}")
+    print(f"💰 综合 ROI: {roi:.2f}% (最大资金使用率 50%)")
+    print("="*70)

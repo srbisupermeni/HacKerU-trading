@@ -147,6 +147,20 @@ class FeatureEngineer:
         df['atr_14'] = df['true_range'].rolling(window=14).mean()
 
         # ==========================================
+        # 补充：趋势过滤指标 (Trend Filter)
+        # ==========================================
+
+        # SMA 20：用于判断价格是否在均线之上（顺势过滤）
+        df['sma_20'] = df['close'].rolling(window=20).mean()
+
+        # RSI 14：用于防止追高（过热过滤）
+        delta = df['close'].diff()
+        gain = delta.clip(lower=0).rolling(window=14).mean()
+        loss = (-delta.clip(upper=0)).rolling(window=14).mean()
+        rs = gain / (loss + epsilon)
+        df['rsi_14'] = 100 - (100 / (1 + rs))
+
+        # ==========================================
         # 4. 订单流与买卖量特征 (Order Flow / Microstructure) - 核心优势
         # ==========================================
         # 主动买单与卖单的比例 (Buy/Sell Ratio)
@@ -166,9 +180,55 @@ class FeatureEngineer:
         vol_sma_24 = df['volume'].rolling(window=24).mean()
         df['volume_intensity'] = df['volume'] / (vol_sma_24 + epsilon) 
 
-        # 5. 生成预测目标 (Target Variable)
+        # ---------------------------------------------------------
+        # 🟢 新增短线强力因子 (在原有的特征计算之后加入)
+        # ---------------------------------------------------------
+        # 1. 布林带相对位置 (-1到1之间，衡量价格在通道中的极限程度)
+        bb_middle = df['close'].rolling(20).mean()
+        bb_std = df['close'].rolling(20).std()
+        df['bb_position'] = (df['close'] - bb_middle) / (2 * bb_std + 1e-8)
+        
+        # 2. 短期量价背离 (防止无量拉升的假突破)
+        pct_change = df['close'].pct_change()
+        vol_ma = df['volume'].rolling(20).mean()
+        vol_intensity = df['volume'] / (vol_ma + 1e-8)
+        df['price_vol_divergence'] = pct_change / (vol_intensity + 1e-8)
+        df['price_vol_divergence'] = (pct_change / (vol_intensity + 1e-8)).clip(-1, 1)
+        
+        # 3. 动量持续性 (过去3根K线都在涨)
+        df['consecutive_up'] = (pct_change > 0).astype(int).rolling(3).sum()
+        
+        # 4. 24根K线(2小时)内的百分位排名 (感知局部高低点)
+        df['percentile_24'] = df['close'].rolling(24).rank(pct=True)
+        # ---------------------------------------------------------
+
+        # ---------------------------------------------------------
+        # 🚀 5. 高级微观与统计特征 (Advanced Institutional Alpha)
+        # ---------------------------------------------------------
+        # 5.1 VWAP 偏离度 (VWAP Deviation) - 极强的均值回归/趋势破位因子
+        # 机构做市算法的核心锚点，偏离过大通常意味着极端的买卖枯竭
+        typical_price_vol = df['typical_price'] * df['volume']
+        rolling_vwap = typical_price_vol.rolling(window=24).sum() / (df['volume'].rolling(window=24).sum() + 1e-8)
+        df['vwap_deviation'] = (df['close'] - rolling_vwap) / rolling_vwap
+
+        # 5.2 订单流加速度 (Order Flow Acceleration) - 买卖盘力量的二阶导数
+        # 不仅看买盘是否大于卖盘，还要看买盘进场的“速度”是否在加快
+        df['vol_imbalance_accel'] = df[f'vol_imbalance_6'].diff(3)
+
+        # 5.3 收益率 Z-Score (极限波动探测器)
+        # 捕捉 5 分钟级别由于插针或清算引发的异常波动，往往是极佳的入场点
+        rolling_mean_ret = df['log_return'].rolling(window=24).mean()
+        rolling_std_ret = df['log_return'].rolling(window=24).std()
+        df['return_z_score'] = (df['log_return'] - rolling_mean_ret) / (rolling_std_ret + 1e-8)
+
+        # 5.4 影线极值比 (Tail Risk Skew) - 探测上下方的抵抗力量
+        # 1 表示全是下影线(强支撑)，-1 表示全是上影线(强抛压)
+        df['shadow_skew'] = (df['lower_shadow'] - df['upper_shadow']) / (df['lower_shadow'] + df['upper_shadow'] + 1e-8)
+        # ---------------------------------------------------------
+
+        # 6. 生成预测目标 (Target Variable)
         # 预测未来 target_window 个周期的对数收益率
-        target_window = 6 
+        target_window = 12
         df[f'target_return_{target_window}'] = np.log(df['close'].shift(-target_window) / df['close'])
 
         # 二分类目标：未来是否上涨？(1 为上涨，0 为下跌)
