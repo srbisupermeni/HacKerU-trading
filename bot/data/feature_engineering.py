@@ -234,6 +234,7 @@ class FeatureEngineer:
         # 二分类目标：未来是否上涨？(1 为上涨，0 为下跌)
         df['target_class'] = (df[f'target_return_{target_window}'] > 0).astype(int)
         
+        
         # 将最后几行的 target 设为 NaN (因为未来数据未知)
         df.loc[df.index[-target_window:], [f'target_return_{target_window}', 'target_class']] = np.nan
 
