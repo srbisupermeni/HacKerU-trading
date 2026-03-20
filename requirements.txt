@@ -6,6 +6,9 @@ python-binance>=1.0.35
 
 #config
 PyYAML>=6.0.0
+python-dotenv>=1.0.0   # Added for .env management
+requests>=2.31.0       # Added for API communication
+
 
 # Machine Learning & Evaluation
 scikit-learn>=1.2.0

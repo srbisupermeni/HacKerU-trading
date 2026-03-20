@@ -13,7 +13,7 @@ if str(ROOT) not in sys.path:
 from bot.execution.roostoo import Roostoo
 from bot.portfolio.portfolio import Portfolio
 from bot.execution.execution_engine import ExecutionEngine
-from bot.strategy.ml_strategy import DualMLStrategy
+from bot.strategy.strategy_ml import DualMLStrategy
 from database.Binance_fetcher import BinanceDataFetcher
 
 # 配置主程序日志
