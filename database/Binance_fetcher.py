@@ -34,6 +34,7 @@ import pandas as pd
 import os
 import zipfile
 import io
+import logging
 from datetime import date, timedelta
 from binance.client import Client 
 
@@ -59,13 +60,12 @@ class BinanceDataFetcher:
         self.client = Client()
 
     def show_data(self, df, num_rows=5):
+        logger = logging.getLogger(__name__)
         if df is not None and not df.empty:
-            print(f" {num_rows} of head:")
-            print(df.head(num_rows))
-            print(f"{num_rows} of tail:")
-            print(df.tail(num_rows))
+            logger.info(f"{num_rows} of head:\n{df.head(num_rows)}")
+            logger.info(f"{num_rows} of tail:\n{df.tail(num_rows)}")
         else:
-            print("empty df or None")
+            logger.info("empty df or None")
 
     def _add_technical_indicators(self, df):
         df['return_rate'] = df['close'].pct_change()
@@ -100,41 +100,84 @@ class BinanceDataFetcher:
         获取当前时刻往前推的最新 K 线数据 (包含 buy_volume 和 sell_volume)
         :param limit: 获取的数据条数（最高 2000 条）
         """
-        print(f"Fetching recent {limit} candles for {symbol} ({interval}) via SDK...")
-        
-        # 使用 SDK 获取数据
-        raw_klines = self.client.get_klines(symbol=symbol.upper(), interval=interval, limit=limit)
-        
-        if not raw_klines:
+        logger = logging.getLogger(__name__)
+        logger.info(f"Fetching recent {limit} candles for {symbol} ({interval}) via SDK...")
+
+        try:
+            # 使用 SDK 获取数据
+            raw_klines = self.client.get_klines(symbol=symbol.upper(), interval=interval, limit=limit)
+        except Exception as e:
+            logger.exception("Exception while calling Binance SDK get_klines")
             return None
 
-        # SDK 返回的列表格式与 REST API 一致
+        if not raw_klines:
+            logger.warning("No klines returned from SDK")
+            return None
+
+        # 支持 SDK 返回 list-of-lists (经典格式) 或 list-of-dicts (兼容其他客户端/REST库)
         columns = [
             'open_time', 'open', 'high', 'low', 'close', 'volume',
             'close_time', 'quote_asset_volume', 'number_of_trades',
             'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'
         ]
-        df = pd.DataFrame(raw_klines, columns=columns)
 
-        # 统一时间格式（SDK 返回的是毫秒）
-        df['open_time'] = pd.to_datetime(df['open_time'], unit='ms')
-        df['close_time'] = pd.to_datetime(df['close_time'], unit='ms')
-        # UTC 转换为北京时间 (UTC+8)
-        df['open_time'] = df['open_time'] + pd.Timedelta(hours=8)
-        df['close_time'] = df['close_time'] + pd.Timedelta(hours=8)
+        try:
+            first = raw_klines[0]
+        except Exception:
+            logger.exception("Unexpected klines format (not indexable)")
+            return None
 
-        # 转换数值类型
-        numeric_columns = ['open', 'high', 'low', 'close', 'volume', 'taker_buy_base_asset_volume']
-        for col in numeric_columns:
-            df[col] = df[col].astype(float)
+        try:
+            if isinstance(first, dict):
+                # map common camelCase keys to our expected snake_case
+                df = pd.DataFrame(raw_klines)
+                mapping = {
+                    'openTime': 'open_time',
+                    'open': 'open',
+                    'high': 'high',
+                    'low': 'low',
+                    'close': 'close',
+                    'volume': 'volume',
+                    'closeTime': 'close_time',
+                    'quoteAssetVolume': 'quote_asset_volume',
+                    'numberOfTrades': 'number_of_trades',
+                    'takerBuyBaseAssetVolume': 'taker_buy_base_asset_volume',
+                    'takerBuyQuoteAssetVolume': 'taker_buy_quote_asset_volume'
+                }
+                df.rename(columns=mapping, inplace=True)
+            else:
+                df = pd.DataFrame(raw_klines, columns=columns)
 
-        # 计算买卖量
-        df['buy_volume'] = df['taker_buy_base_asset_volume']
-        df['sell_volume'] = df['volume'] - df['taker_buy_base_asset_volume']
+            # 统一时间格式（SDK 返回的是毫秒）
+            df['open_time'] = pd.to_datetime(df['open_time'], unit='ms')
+            df['close_time'] = pd.to_datetime(df['close_time'], unit='ms')
+            # UTC 转换为北京时间 (UTC+8)
+            df['open_time'] = df['open_time'] + pd.Timedelta(hours=8)
+            df['close_time'] = df['close_time'] + pd.Timedelta(hours=8)
 
-        # 截取最终的 8 列
-        df = df[['open_time', 'open', 'high', 'low', 'close', 'volume', 'buy_volume', 'sell_volume']]
-        return df
+            # 转换数值类型（更安全的转换方式）
+            numeric_columns = ['open', 'high', 'low', 'close', 'volume', 'taker_buy_base_asset_volume']
+            for col in numeric_columns:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+                else:
+                    df[col] = np.nan
+
+            # 计算买卖量（若缺失买量则置为 NaN）
+            df['buy_volume'] = df.get('taker_buy_base_asset_volume')
+            df['sell_volume'] = df['volume'] - df['buy_volume']
+
+            # 截取最终的 8 列（确保列存在）
+            desired = ['open_time', 'open', 'high', 'low', 'close', 'volume', 'buy_volume', 'sell_volume']
+            for c in desired:
+                if c not in df.columns:
+                    df[c] = np.nan
+
+            df = df[desired]
+            return df
+        except Exception:
+            logger.exception("Failed to parse klines into DataFrame")
+            return None
 
 
 
