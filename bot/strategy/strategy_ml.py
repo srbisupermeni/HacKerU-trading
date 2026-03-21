@@ -258,8 +258,8 @@ class DualMLLiveManager:
             
         self.strategies = {item["coin"]: DualMLStrategy(portfolio, execution, item["symbol"], item["coin"]) for item in target_coins}
         
-        # 实盘状态跟踪
-        self.positions_state = {c: {"qty": 0.0, "entry_price": 0.0, "entry_bar": 0, "sl_pct": 0.0, "tp_pct": 0.0} for c in self.strategies}
+        # 🟢 修复3：增加 invested_cash 字段用于准确计算包含手续费的 PnL
+        self.positions_state = {c: {"qty": 0.0, "entry_price": 0.0, "entry_bar": 0, "sl_pct": 0.0, "tp_pct": 0.0, "invested_cash": 0.0} for c in self.strategies}
         self.cooldowns = {c: 0 for c in self.strategies}
         self.consecutive_losses = {c: 0 for c in self.strategies}
         
@@ -272,7 +272,6 @@ class DualMLLiveManager:
         base_df = sim_data.get("BTC")
         if base_df is None or base_df.empty: return
         
-        # 确保只在产生新 K 线时推进时间步
         latest_time = base_df.iloc[-1]["open_time"]
         if self.last_candle_time != latest_time:
             self.current_bar_index += 1
@@ -284,20 +283,19 @@ class DualMLLiveManager:
         if self.last_train_time is None or (current_time - self.last_train_time).total_seconds() >= 86400:
             print(f"🔄 [{current_time}] 触发机制：正在融合最新盘感重训模型...")
             for coin in self.strategies:
-                # 提取过去 TRAIN_DAYS 天的数据进行训练
-                df_train = sim_data[coin].iloc[-(TRAIN_DAYS*288):] 
+                # 🟢 修复4：消除前视偏差。排除当前未走完的最新一根K线(iloc[-1])，严格使用此前的 60 天数据
+                train_window_bars = TRAIN_DAYS * 288
+                df_train = sim_data[coin].iloc[-(train_window_bars + 1) : -1] 
                 self.strategies[coin].train_models_from_df(df_train)
             self.last_train_time = current_time
             print("✅ 模型矩阵升级完毕，恢复交易巡航。")
 
-        # 2. 截面 BTC Regime 计算
         btc_sma_now = base_df.iloc[-288:]["close"].mean()
         btc_sma_prev = base_df.iloc[-300:-12]["close"].mean()
         btc_multiplier = 1.0 if btc_sma_now > btc_sma_prev else 0.5
 
         predictions = []
         
-        # 3. 遍历资产，执行退出和入场信号生成
         for coin, strat in self.strategies.items():
             df = sim_data.get(coin)
             if df is None or df.empty or pd.isna(df.iloc[-1]["open"]): continue
@@ -315,27 +313,37 @@ class DualMLLiveManager:
                 exit_price, reason = None, ""
                 bars_held = self.current_bar_index - pos["entry_bar"]
                 
-                if curr_row["low"] <= sl_p: exit_price, reason = sl_p * (1 - SLIPPAGE), "🛑 常规止损"
+                # 🟢 修复1：补齐跳空(Gap)判定逻辑，严格对齐回测规则
+                if curr_row["open"] <= sl_p: exit_price, reason = curr_row["open"] * (1 - SLIPPAGE), "🛑 跳空止损"
+                elif curr_row["open"] >= tp_p: exit_price, reason = curr_row["open"] * (1 - SLIPPAGE), "🎯 跳空止盈"
+                elif curr_row["low"] <= sl_p: exit_price, reason = sl_p * (1 - SLIPPAGE), "🛑 常规止损"
                 elif curr_row["high"] >= tp_p: exit_price, reason = tp_p * (1 - SLIPPAGE), "🎯 常规止盈"
                 elif bars_held >= 6 and score < -0.5: exit_price, reason = curr_row["open"] * (1 - SLIPPAGE), "⚠️ AI动量衰竭强平"
                 elif bars_held >= 12: exit_price, reason = curr_row["open"] * (1 - SLIPPAGE), "⏰ 严格12根超时平仓"
                 
                 if exit_price:
-                    # 提交到执行引擎
                     order = self.portfolio.create_order(coin, "SELL", pos["qty"], order_type="MARKET", strategy_id=strat.strategy_id)
                     res = self.portfolio.execute_order(order)
                     
                     if res.get("success"):
-                        pnl = (exit_price - pos["entry_price"]) * pos["qty"]
+                        # 🟢 修复3：严格按照扣除买卖双边手续费计算真实净盈亏(PnL)
+                        rev = pos["qty"] * exit_price * (1 - FEE_RATE)
+                        pnl = rev - pos["invested_cash"]
+                        
                         if pnl > 0:
                             self.consecutive_losses[coin] = 0
                             self.cooldowns[coin] = self.current_bar_index + 6
                         else:
                             self.consecutive_losses[coin] += 1
-                            self.cooldowns[coin] = self.current_bar_index + (36 if coin_group == "meme" else 24) if self.consecutive_losses[coin] >= 2 else self.current_bar_index + (12 if coin_group == "meme" else 6)
+                            # 🟢 修复2：触发长冷静期后，将连亏计数器清零，防止永久被惩罚
+                            if self.consecutive_losses[coin] >= 2:
+                                self.cooldowns[coin] = self.current_bar_index + (36 if coin_group == "meme" else 24)
+                                self.consecutive_losses[coin] = 0  # <--- 清零修复
+                            else:
+                                self.cooldowns[coin] = self.current_bar_index + (12 if coin_group == "meme" else 6)
                         
-                        self.positions_state[coin] = {"qty": 0.0, "entry_price": 0.0, "entry_bar": 0, "sl_pct": 0.0, "tp_pct": 0.0}
-                        print(f"[{current_time}] 卖出 [{coin}] {reason}")
+                        self.positions_state[coin] = {"qty": 0.0, "entry_price": 0.0, "entry_bar": 0, "sl_pct": 0.0, "tp_pct": 0.0, "invested_cash": 0.0}
+                        print(f"[{current_time}] 卖出 [{coin}] {reason} | 净赚: ${pnl:.2f}")
             
             # --- 开仓漏斗 ---
             else:
@@ -367,13 +375,12 @@ class DualMLLiveManager:
                     "tp_pct": tp_pct, "sl_pct": sl_pct, "expected_edge": expected_edge
                 })
 
-        # 4. 执行资金分配与买入
+        # 执行资金分配与买入
         active_cnt = sum(1 for p in self.positions_state.values() if p["qty"] > 0)
         if active_cnt < MAX_POSITIONS and predictions:
             predictions.sort(key=lambda x: x["expected_edge"], reverse=True)
             group_counts = Counter(get_group(c) for c, p in self.positions_state.items() if p["qty"] > 0)
             
-            # 使用传入的全局净值计算 50% 专属额度
             target_exposure = total_equity * MAX_CAPITAL_USAGE 
             current_gross = sum(p["qty"] * float(sim_data[c].iloc[-1]["open"]) for c, p in self.positions_state.items() if p["qty"] > 0)
             remaining_budget = target_exposure - current_gross
@@ -383,10 +390,7 @@ class DualMLLiveManager:
                 coin, g = target["coin"], get_group(target["coin"])
                 if group_counts[g] >= GROUP_LIMITS.get(g, 1): continue
                 
-                # 计算目标投资额（单币种上限为全局的 15%）
                 invest = min((remaining_budget / (MAX_POSITIONS - active_cnt)) * btc_multiplier, total_equity * 0.15)
-                
-                # 🛡️ 物理兜底：策略算出的额度不能超过真实账户里剩下的现金
                 invest = min(invest, self.portfolio.account_balance)
                 
                 if invest < MIN_ORDER_USD: continue
@@ -394,21 +398,21 @@ class DualMLLiveManager:
                 entry_p = float(target["price"] * (1 + SLIPPAGE))
                 qty = float(smart_quantity(invest / (1 + FEE_RATE), entry_p))
                 
-                # 提交到执行引擎
                 order = self.portfolio.create_order(coin, "BUY", qty, order_type="MARKET", strategy_id=self.strategies[coin].strategy_id)
                 res = self.portfolio.execute_order(order)
                 
                 if res.get("success"):
+                    # 🟢 修复3：记录真实的包含手续费的投入本金 (invested_cash)
                     actual_cost = qty * entry_p * (1 + FEE_RATE)
                     self.positions_state[coin] = {
                         "qty": qty, "entry_price": entry_p, "entry_bar": self.current_bar_index,
-                        "sl_pct": target["sl_pct"], "tp_pct": target["tp_pct"]
+                        "sl_pct": target["sl_pct"], "tp_pct": target["tp_pct"],
+                        "invested_cash": actual_cost
                     }
                     group_counts[g] += 1
                     active_cnt += 1
                     remaining_budget -= actual_cost
                     print(f"[{current_time}] 🟢 买入 [{coin}] | Edge: {target['expected_edge']:.4f}")
-
 
 
 # ============================================================
