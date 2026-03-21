@@ -2,6 +2,12 @@ import logging
 import time
 from typing import Dict, Any
 
+# Attempt to import Roostoo client for on-demand ticker fetching
+try:
+    from bot.api.roostoo import Roostoo
+except Exception:
+    Roostoo = None
+
 
 class Portfolio:
     """
@@ -419,21 +425,127 @@ class Portfolio:
 
     # ================= 市场价格和 PnL 查询 =================
 
-    def update_market_prices(self, prices: Dict[str, float]):
+    def update_market_prices(self):
         """
-        更新市场价格（用于计算未实现 PnL）
-        
+        自动从 Roostoo 拉取所有交易对的行情并更新当前持仓/成本基础中币种的价格，进而更新未实现 PnL。
+
+        说明：方法不接受参数，会优先使用挂载在 self.execution.client 的 Roostoo 实例，
+        如果不存在则尝试按需实例化 `bot.api.roostoo.Roostoo`。
+        """
+        # 尝试通过 Roostoo 客户端拉取所有交易对行情
+        roostoo_client = None
+        # 优先使用 execution 已有的 client（ExecutionEngine 通常会挂载 client）
+        if getattr(self, 'execution', None) is not None:
+            roostoo_client = getattr(self.execution, 'client', None)
+
+        # 否则尝试按需实例化 Roostoo（如果可用）
+        if roostoo_client is None and Roostoo is not None:
+            try:
+                roostoo_client = Roostoo()
+            except Exception as e:
+                self.logger.warning(f"无法实例化 Roostoo 客户端: {e}")
+
+        if roostoo_client is None:
+            self.logger.error("没有可用的 Roostoo 客户端，无法自动更新行情。")
+            return False
+
+        # 获取所有 ticker
+        resp = roostoo_client.get_ticker()
+        if not resp or not isinstance(resp, dict):
+            self.logger.warning(f"从 Roostoo 获取 ticker 失败或返回格式不正确: {resp}")
+            return False
+
+        data = resp.get('Data') or resp.get('data') or {}
+
+        # 构建需要更新的币种列表：优先为当前持仓与已知成本基础中的币种
+        coins_to_update = set(self.positions.keys()) | set(self.cost_basis.keys()) | set(self.market_prices.keys())
+        if not coins_to_update:
+            # 如果当前没有持仓，则尝试从 trade_pairs 中挑选可交易的部分币种以更新其行情
+            coins_to_update = {info.get('coin') for info in self.trade_pairs.values() if info.get('coin')}
+
+        updated = {}
+        for coin in coins_to_update:
+            if not coin:
+                continue
+
+            # 常见 pair 命名形式: 'BTC/USD'
+            pair_name = f"{coin}/USD"
+            ticker = None
+
+            # 直接尝试以 COIN/USD 查找
+            if isinstance(data, dict) and pair_name in data:
+                ticker = data.get(pair_name)
+            else:
+                # 尝试在 trade_pairs 中查找匹配的交易对名
+                for p, info in self.trade_pairs.items():
+                    if info.get('coin') and info.get('coin').upper() == coin.upper():
+                        if p in data:
+                            ticker = data.get(p)
+                            pair_name = p
+                            break
+
+            # 如果还是没找到，则跳过
+            if not ticker:
+                self.logger.debug(f"未在行情数据中找到对应交易对: {coin} (tried {pair_name})")
+                continue
+
+            # 解析 last price 字段并更新
+            last_price = None
+            if isinstance(ticker, dict):
+                # 常见字段名称: 'LastPrice'
+                last_price = ticker.get('LastPrice') or ticker.get('lastPrice') or ticker.get('price')
+            else:
+                # 如果 ticker 不是 dict（不常见），尝试直接作为价格
+                last_price = ticker
+
+            try:
+                price_val = float(last_price)
+            except Exception:
+                self.logger.warning(f"无法解析 {pair_name} 的价格: {last_price}")
+                continue
+
+            self.market_prices[coin] = price_val
+            self._update_unrealized_pnl(coin)
+            updated[coin] = price_val
+
+        if updated:
+            self.logger.info(f"自动更新市场价格: {updated}")
+            return True
+        else:
+            self.logger.info("未找到可更新的币种行情。")
+            return False
+
+    def set_market_prices(self, prices: Dict[str, float]) -> bool:
+        """
+        手动设置市场价格（用于测试/模拟），并更新未实现 PnL。
+
         参数：
             prices: {'BTC': 55000.0, 'ETH': 2000.0, ...}
-        
-        示例：
-            portfolio.update_market_prices({'BTC': 55000.0, 'ETH': 2000.0})
         """
-        for coin, price in prices.items():
-            self.market_prices[coin] = price
-            self._update_unrealized_pnl(coin)
+        if not isinstance(prices, dict):
+            self.logger.error("set_market_prices 需要一个 dict 参数")
+            return False
 
-        self.logger.info(f"更新市场价格: {prices}")
+        updated = {}
+        for coin, price in prices.items():
+            if not coin:
+                continue
+            try:
+                price_val = float(price)
+            except Exception:
+                self.logger.warning(f"忽略无法解析的价格: {coin}={price}")
+                continue
+
+            self.market_prices[coin] = price_val
+            self._update_unrealized_pnl(coin)
+            updated[coin] = price_val
+
+        if updated:
+            self.logger.info(f"手动设置市场价格: {updated}")
+            return True
+        else:
+            self.logger.info("没有有效的手动价格被设置。")
+            return False
 
     def get_pnl_snapshot(self) -> Dict[str, Any]:
         """

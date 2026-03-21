@@ -94,13 +94,13 @@ def main():
     strategy = SimpleRandomStrategy(rng)
 
     market_prices = {"BTC": 65000.0, "ETH": 3200.0, "XRP": 0.55}
-    portfolio.update_market_prices(market_prices)
+    portfolio.set_market_prices(market_prices)
 
     print("HTTP FAKE BOT START")
     for tick in range(1, args.ticks + 1):
         print(f"\n--- TICK {tick} ---")
         market_prices = random_walk_prices(rng, market_prices)
-        portfolio.update_market_prices(market_prices)
+        portfolio.set_market_prices(market_prices)
         for c, p in market_prices.items():
             print(f"  {c}: {p}")
 

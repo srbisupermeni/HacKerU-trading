@@ -131,7 +131,7 @@ class ExecutionEngine:
         3. 返回下单结果
         
         参数：
-            coin: 币种代码，例如 'BTC', 'ETH'
+            coin: 币种代码，例如 'BTC/USD', 'ETH/USD'
             side: 方向，'BUY' 或 'SELL'
             quantity: 数量
             price: 价格（可选）

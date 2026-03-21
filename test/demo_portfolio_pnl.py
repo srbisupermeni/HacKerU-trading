@@ -53,7 +53,7 @@ def demo_pnl_and_cost_tracking():
     
     # ===== 场景 3: 更新市场价格为 55000 =====
     print("\n📝 步骤 3: 更新市场价格为 55000")
-    portfolio.update_market_prices({'BTC': 55000.0})
+    portfolio.set_market_prices({'BTC': 55000.0})
     
     pos = portfolio.get_position('BTC')
     print(f"  当前价格: {pos['current_price']} USDT")
@@ -73,7 +73,7 @@ def demo_pnl_and_cost_tracking():
     
     # ===== 场景 5: 价格涨到 60000 =====
     print("\n📝 步骤 5: 市场价格涨到 60000")
-    portfolio.update_market_prices({'BTC': 60000.0})
+    portfolio.set_market_prices({'BTC': 60000.0})
     
     pos = portfolio.get_position('BTC')
     print(f"  当前价格: {pos['current_price']} USDT")
@@ -127,7 +127,7 @@ def demo_pnl_snapshot():
     # BTC
     portfolio.acquire_coin('BTC', 's1')
     portfolio.register_order_execution('BTC', 's1', 'BUY', 1.0, 50000.0)
-    portfolio.update_market_prices({'BTC': 55000.0})
+    portfolio.set_market_prices({'BTC': 55000.0})
     
     portfolio.acquire_coin('BTC', 's1')
     portfolio.register_order_execution('BTC', 's1', 'SELL', 0.5, 55000.0)
@@ -135,7 +135,7 @@ def demo_pnl_snapshot():
     # ETH
     portfolio.acquire_coin('ETH', 's2')
     portfolio.register_order_execution('ETH', 's2', 'BUY', 10.0, 2000.0)
-    portfolio.update_market_prices({'ETH': 2100.0})
+    portfolio.set_market_prices({'ETH': 2100.0})
     
     # 获取快照
     snapshot = portfolio.get_pnl_snapshot()
