@@ -39,9 +39,21 @@ from binance.client import Client
 # Helper to obtain a logger but avoid raising OSError if the logging system's handlers
 # are misconfigured or the filesystem is not writable. Falls back to a simple printer.
 def _get_safe_logger(name):
+    # Be defensive: some environments raise I/O errors when logging handlers attempt to
+    # write (e.g. failing mount or device). Return a dummy logger if anything goes wrong.
     try:
-        return logging.getLogger(name)
-    except OSError:
+        lg = logging.getLogger(name)
+        # probe a harmless emit to detect handler I/O issues early
+        try:
+            for h in lg.handlers:
+                # try formatting a short message using the handler to exercise its emit path
+                if hasattr(h, 'formatter') and h.formatter is not None:
+                    h.formatter.format(logging.LogRecord(name, logging.INFO, __file__, 0, "", None, None))
+        except Exception:
+            # handler emitted an error; fall through to dummy
+            raise
+        return lg
+    except Exception:
         class _DummyLogger:
             def info(self, msg, *args, **kwargs):
                 try:
@@ -57,7 +69,11 @@ def _get_safe_logger(name):
 
             def exception(self, msg, *args, **kwargs):
                 try:
-                    print("EXCEPTION:", str(msg))
+                    # prefer to print full exception info if available
+                    if args:
+                        print("EXCEPTION:", str(msg), args)
+                    else:
+                        print("EXCEPTION:", str(msg))
                 except Exception:
                     pass
 
@@ -93,29 +109,41 @@ class BinanceDataFetcher:
             logger.info("empty df or None")
 
     def _add_technical_indicators(self, df):
-        df['return_rate'] = df['close'].pct_change()
-        df['log_return'] = np.log(df['close'] / df['close'].shift(1))
-        df['volatility_20'] = df['return_rate'].rolling(window=20).std()
-        df['momentum_10'] = df['close'] - df['close'].shift(10)
-        df['sma_20'] = df['close'].rolling(window=20).mean()
-        df['ema_20'] = df['close'].ewm(span=20, adjust=False).mean()
-        
-        std_20 = df['close'].rolling(window=20).std()
-        df['bb_upper'] = df['sma_20'] + 2 * std_20
-        df['bb_lower'] = df['sma_20'] - 2 * std_20
-        
-        delta = df['close'].diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-        rs = gain / loss
-        df['rsi_14'] = 100 - (100 / (1 + rs))
-        
-        ema_12 = df['close'].ewm(span=12, adjust=False).mean()
-        ema_26 = df['close'].ewm(span=26, adjust=False).mean()
-        df['macd'] = ema_12 - ema_26
-        df['macd_signal'] = df['macd'].ewm(span=9, adjust=False).mean()
-        
-        return df
+        logger = _get_safe_logger(__name__)
+        try:
+            df['return_rate'] = df['close'].pct_change()
+            df['log_return'] = np.log(df['close'] / df['close'].shift(1))
+            df['volatility_20'] = df['return_rate'].rolling(window=20).std()
+            df['momentum_10'] = df['close'] - df['close'].shift(10)
+            df['sma_20'] = df['close'].rolling(window=20).mean()
+            df['ema_20'] = df['close'].ewm(span=20, adjust=False).mean()
+
+            std_20 = df['close'].rolling(window=20).std()
+            df['bb_upper'] = df['sma_20'] + 2 * std_20
+            df['bb_lower'] = df['sma_20'] - 2 * std_20
+
+            delta = df['close'].diff()
+            gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+            rs = gain / loss
+            df['rsi_14'] = 100 - (100 / (1 + rs))
+
+            ema_12 = df['close'].ewm(span=12, adjust=False).mean()
+            ema_26 = df['close'].ewm(span=26, adjust=False).mean()
+            df['macd'] = ema_12 - ema_26
+            df['macd_signal'] = df['macd'].ewm(span=9, adjust=False).mean()
+
+            return df
+        except Exception:
+            # defensive: if any error occurs (including OSError from logging subsystem), log safely and return df unchanged
+            try:
+                logger.exception("Failed to compute technical indicators; returning original df")
+            except Exception:
+                try:
+                    print("Failed to compute technical indicators; returning original df")
+                except Exception:
+                    pass
+            return df
 
     # ==========================================
     # 模块一：获取最新/实时的热数据 (通过 Python SDK)
