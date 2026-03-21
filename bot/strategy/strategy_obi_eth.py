@@ -86,6 +86,97 @@ class ObiEthStrategy:
             return df
         return df.iloc[-1]
 
+# ... [保留导入和基础的类设置] ...
+
+class ObiEthStrategy:
+    def __init__(self, portfolio: Portfolio, execution: ExecutionEngine, 
+                 symbol="ETHUSDT", coin="ETH", strategy_id="obi_eth_01", alloc_ratio=0.50):
+        # [保留现有的 __init__ 行]
+        
+        # 🟢 新增：实盘状态管理变量 (代替原先 __main__ 里的 pos_qty)
+        self.pos_qty = 0.0
+        self.pos_entry = 0.0
+        self.pos_sl = 0.0
+        self.pos_tp = 0.0
+
+    def calculate_indicators(self, df: pd.DataFrame, return_full=False) -> pd.Series | pd.DataFrame:
+        # [保持逻辑完全不变]
+        pass
+
+    def on_live_candle(self, recent_df: pd.DataFrame, total_equity: float):
+        """
+        🟢 新增：实盘专用流处理接口。
+        将入场和完整的物理止损/止盈逻辑收敛到内部，依靠 ExecutionEngine 下单。
+        """
+        self.current_index += 1
+        if len(recent_df) < max(120, self.ema_period):
+            return
+            
+        latest = self.calculate_indicators(recent_df)
+        if pd.isna(latest['atr']) or latest['atr'] <= 0:
+            return
+            
+        curr_price = latest['close']
+        
+        # --- 1. 平仓判定 ---
+        if self.pos_qty > 0:
+            exit_triggered = False
+            reason = ""
+            
+            if latest['low'] <= self.pos_sl: 
+                exit_triggered, reason = True, "🛑 触发 ATR 物理止损"
+            elif latest['high'] >= self.pos_tp: 
+                exit_triggered, reason = True, "🎯 触发 ATR 物理止盈"
+            elif (curr_price < latest['ema']) and (latest['obi_slow'] < 0): 
+                exit_triggered, reason = True, "⚠️ 触发策略恶化平仓"
+                
+            if exit_triggered:
+                order = self.portfolio.create_order(self.coin, "SELL", self.pos_qty, order_type="MARKET", strategy_id=self.strategy_id)
+                res = self.portfolio.execute_order(order)
+                if res.get('success'):
+                    self.logger.info(f"[{self.coin}] {reason}. 卖出价格参考: {curr_price:.2f}")
+                    self.pos_qty = 0.0
+                    
+        # --- 2. 开仓判定 ---
+        if self.pos_qty == 0:
+            cooldown_ok = (self.current_index - self.last_trade_index) >= self.cooldown_bars
+            
+            if (latest['obi_slow'] > self.obi_slow_threshold and
+                latest['obi_momentum'] > self.obi_momentum_threshold and
+                latest['vol_ratio'] > self.vol_ratio_threshold and
+                latest['above_ema'] and cooldown_ok):
+                
+                min_distance = curr_price * 0.005
+                sl_dist = max(latest['atr'] * self.atr_sl_multiplier, min_distance)
+                tp_dist = max(latest['atr'] * self.atr_tp_multiplier, min_distance * 1.5)
+                
+                sl_price = round(curr_price - sl_dist, 4)
+                tp_price = round(curr_price + tp_dist, 4)
+                
+                # 🟢 改动 2：使用全局总净值计算 OBI 的 50% 额度
+                target_invest_amount = total_equity * self.alloc_ratio
+                
+                # 🛡️ 物理兜底：如果被 ML 占用了部分资金导致现金不足，仅使用剩余可用现金
+                invest_amount = min(target_invest_amount, self.portfolio.account_balance)
+                
+                if invest_amount < 10.0: # 防止余额过小无法下单
+                    return
+                
+                quantity = round(invest_amount / curr_price, 4)
+                
+                order = self.portfolio.create_order(self.coin, "BUY", quantity, price=curr_price, order_type="LIMIT", strategy_id=self.strategy_id)
+                res = self.portfolio.execute_order(order)
+                
+                if res.get('success'):
+                    self.logger.info(f"🎯 [{self.coin} OBI 突破确认] 触发做多！买入价格参考: {curr_price:.2f}")
+                    self.pos_qty = quantity
+                    self.pos_entry = curr_price
+                    self.pos_sl = sl_price
+                    self.pos_tp = tp_price
+                    self.last_trade_index = self.current_index
+
+    # [保留 on_new_candle 和 __main__ 完全不变]
+
     def on_new_candle(self, recent_df: pd.DataFrame, current_price: float):
         """实盘接收新 K 线的入口"""
         self.current_index += 1

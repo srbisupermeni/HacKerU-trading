@@ -233,6 +233,182 @@ class DualMLStrategy:
         self.latest_raw_prob = float(p_l * self.weight_lgb + p_x * self.weight_xgb)
         self.latest_score = (self.latest_raw_prob - self.val_prob_mean) / self.val_prob_std
         return self.latest_score
+    
+
+
+# ============================================================
+# 🟢 新增：实盘管理器 (Live Manager) 供 main.py 调用
+# ============================================================
+class DualMLLiveManager:
+    """
+    封装了原先散落在 __main__ 中的截面风控、仓位管理和止盈止损逻辑。
+    用于在实盘主循环中每根 K 线调用一次 on_tick()。
+    """
+    def __init__(self, portfolio, execution, target_coins=None):
+        self.portfolio = portfolio
+        self.execution = execution
+        
+        if target_coins is None:
+            target_coins = [
+                {"symbol": "BTCUSDT", "coin": "BTC"}, {"symbol": "SOLUSDT", "coin": "SOL"},
+                {"symbol": "PEPEUSDT", "coin": "PEPE"}, {"symbol": "WIFUSDT", "coin": "WIF"},
+                {"symbol": "SUIUSDT", "coin": "SUI"}, {"symbol": "APTUSDT", "coin": "APT"},
+                {"symbol": "FETUSDT", "coin": "FET"}
+            ]
+            
+        self.strategies = {item["coin"]: DualMLStrategy(portfolio, execution, item["symbol"], item["coin"]) for item in target_coins}
+        
+        # 实盘状态跟踪
+        self.positions_state = {c: {"qty": 0.0, "entry_price": 0.0, "entry_bar": 0, "sl_pct": 0.0, "tp_pct": 0.0} for c in self.strategies}
+        self.cooldowns = {c: 0 for c in self.strategies}
+        self.consecutive_losses = {c: 0 for c in self.strategies}
+        
+        self.last_train_time = None
+        self.current_bar_index = 0
+        self.last_candle_time = None
+
+    def on_tick(self, sim_data: dict, current_time: datetime, total_equity: float):
+        """主程序每获取到最新 K 线数据时调用此方法"""
+        base_df = sim_data.get("BTC")
+        if base_df is None or base_df.empty: return
+        
+        # 确保只在产生新 K 线时推进时间步
+        latest_time = base_df.iloc[-1]["open_time"]
+        if self.last_candle_time != latest_time:
+            self.current_bar_index += 1
+            self.last_candle_time = latest_time
+        else:
+            return 
+
+        # 1. 模型重训触发机制
+        if self.last_train_time is None or (current_time - self.last_train_time).total_seconds() >= 86400:
+            print(f"🔄 [{current_time}] 触发机制：正在融合最新盘感重训模型...")
+            for coin in self.strategies:
+                # 提取过去 TRAIN_DAYS 天的数据进行训练
+                df_train = sim_data[coin].iloc[-(TRAIN_DAYS*288):] 
+                self.strategies[coin].train_models_from_df(df_train)
+            self.last_train_time = current_time
+            print("✅ 模型矩阵升级完毕，恢复交易巡航。")
+
+        # 2. 截面 BTC Regime 计算
+        btc_sma_now = base_df.iloc[-288:]["close"].mean()
+        btc_sma_prev = base_df.iloc[-300:-12]["close"].mean()
+        btc_multiplier = 1.0 if btc_sma_now > btc_sma_prev else 0.5
+
+        predictions = []
+        
+        # 3. 遍历资产，执行退出和入场信号生成
+        for coin, strat in self.strategies.items():
+            df = sim_data.get(coin)
+            if df is None or df.empty or pd.isna(df.iloc[-1]["open"]): continue
+            
+            curr_row = df.iloc[-1]
+            score = strat.predict_signal(df.iloc[-300:].copy())
+            feat = strat.latest_features
+            pos = self.positions_state[coin]
+            coin_group = get_group(coin)
+            
+            # --- 平仓逻辑 ---
+            if pos["qty"] > 0:
+                sl_p = pos["entry_price"] * (1 - pos["sl_pct"])
+                tp_p = pos["entry_price"] * (1 + pos["tp_pct"])
+                exit_price, reason = None, ""
+                bars_held = self.current_bar_index - pos["entry_bar"]
+                
+                if curr_row["low"] <= sl_p: exit_price, reason = sl_p * (1 - SLIPPAGE), "🛑 常规止损"
+                elif curr_row["high"] >= tp_p: exit_price, reason = tp_p * (1 - SLIPPAGE), "🎯 常规止盈"
+                elif bars_held >= 6 and score < -0.5: exit_price, reason = curr_row["open"] * (1 - SLIPPAGE), "⚠️ AI动量衰竭强平"
+                elif bars_held >= 12: exit_price, reason = curr_row["open"] * (1 - SLIPPAGE), "⏰ 严格12根超时平仓"
+                
+                if exit_price:
+                    # 提交到执行引擎
+                    order = self.portfolio.create_order(coin, "SELL", pos["qty"], order_type="MARKET", strategy_id=strat.strategy_id)
+                    res = self.portfolio.execute_order(order)
+                    
+                    if res.get("success"):
+                        pnl = (exit_price - pos["entry_price"]) * pos["qty"]
+                        if pnl > 0:
+                            self.consecutive_losses[coin] = 0
+                            self.cooldowns[coin] = self.current_bar_index + 6
+                        else:
+                            self.consecutive_losses[coin] += 1
+                            self.cooldowns[coin] = self.current_bar_index + (36 if coin_group == "meme" else 24) if self.consecutive_losses[coin] >= 2 else self.current_bar_index + (12 if coin_group == "meme" else 6)
+                        
+                        self.positions_state[coin] = {"qty": 0.0, "entry_price": 0.0, "entry_bar": 0, "sl_pct": 0.0, "tp_pct": 0.0}
+                        print(f"[{current_time}] 卖出 [{coin}] {reason}")
+            
+            # --- 开仓漏斗 ---
+            else:
+                if self.current_bar_index < self.cooldowns.get(coin, 0): continue
+                if coin == "BTC": continue 
+                
+                if coin_group == "meme":
+                    if btc_sma_now <= btc_sma_prev: continue
+                    if float(feat.get("volume_intensity", 0.0)) < 1.15: continue
+
+                if score <= strat.conf_thresh: continue
+                if feat.get("rsi_14", 50) >= 68: continue
+                
+                sma_p = (not pd.isna(feat.get("sma_20"))) and (df.iloc[-2]["close"] > feat.get("sma_20"))
+                if not sma_p: continue
+                
+                atr_p = float(feat.get("atr_14", 0.0))
+                if atr_p < MIN_ATR_PCT: continue
+                
+                tp_pct = float(np.clip(atr_p * 2.8, 0.015, 0.040))
+                sl_pct = float(np.clip(atr_p * 2.0, 0.012, 0.028))
+                expected_edge = (score * tp_pct) - (2 * FEE_RATE + 2 * SLIPPAGE) - (sl_pct / max(score, 0.1))
+                
+                floor_threshold = EDGE_FLOOR_COIN.get(coin, EDGE_FLOOR.get(coin_group, 0.015))
+                if expected_edge <= floor_threshold: continue
+                
+                predictions.append({
+                    "coin": coin, "score": score, "price": curr_row["open"],
+                    "tp_pct": tp_pct, "sl_pct": sl_pct, "expected_edge": expected_edge
+                })
+
+        # 4. 执行资金分配与买入
+        active_cnt = sum(1 for p in self.positions_state.values() if p["qty"] > 0)
+        if active_cnt < MAX_POSITIONS and predictions:
+            predictions.sort(key=lambda x: x["expected_edge"], reverse=True)
+            group_counts = Counter(get_group(c) for c, p in self.positions_state.items() if p["qty"] > 0)
+            
+            # 使用传入的全局净值计算 50% 专属额度
+            target_exposure = total_equity * MAX_CAPITAL_USAGE 
+            current_gross = sum(p["qty"] * float(sim_data[c].iloc[-1]["open"]) for c, p in self.positions_state.items() if p["qty"] > 0)
+            remaining_budget = target_exposure - current_gross
+            
+            for target in predictions:
+                if active_cnt >= MAX_POSITIONS or remaining_budget < MIN_ORDER_USD: break
+                coin, g = target["coin"], get_group(target["coin"])
+                if group_counts[g] >= GROUP_LIMITS.get(g, 1): continue
+                
+                # 计算目标投资额（单币种上限为全局的 15%）
+                invest = min((remaining_budget / (MAX_POSITIONS - active_cnt)) * btc_multiplier, total_equity * 0.15)
+                
+                # 🛡️ 物理兜底：策略算出的额度不能超过真实账户里剩下的现金
+                invest = min(invest, self.portfolio.account_balance)
+                
+                if invest < MIN_ORDER_USD: continue
+                
+                entry_p = float(target["price"] * (1 + SLIPPAGE))
+                qty = float(smart_quantity(invest / (1 + FEE_RATE), entry_p))
+                
+                # 提交到执行引擎
+                order = self.portfolio.create_order(coin, "BUY", qty, order_type="MARKET", strategy_id=self.strategies[coin].strategy_id)
+                res = self.portfolio.execute_order(order)
+                
+                if res.get("success"):
+                    actual_cost = qty * entry_p * (1 + FEE_RATE)
+                    self.positions_state[coin] = {
+                        "qty": qty, "entry_price": entry_p, "entry_bar": self.current_bar_index,
+                        "sl_pct": target["sl_pct"], "tp_pct": target["tp_pct"]
+                    }
+                    group_counts[g] += 1
+                    active_cnt += 1
+                    remaining_budget -= actual_cost
+                    print(f"[{current_time}] 🟢 买入 [{coin}] | Edge: {target['expected_edge']:.4f}")
+
 
 
 # ============================================================
