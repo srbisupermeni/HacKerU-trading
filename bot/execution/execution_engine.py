@@ -4,8 +4,8 @@ import time
 import uuid
 from typing import Optional, Dict, List, Any
 
-from HacKerU_bot.api.roostoo import Roostoo
-from HacKerU_bot.portfolio.portfolio import Portfolio
+from bot.api.roostoo import Roostoo
+from bot.portfolio.portfolio import Portfolio
 
 
 class ExecutionEngine:
