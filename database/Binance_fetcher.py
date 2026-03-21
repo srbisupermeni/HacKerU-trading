@@ -83,7 +83,7 @@ def _get_safe_logger(name):
     return _SafeLogger(lg)
 
 class BinanceDataFetcher:
-    def __init__(self):
+    def __init__(self, logger=None):
         base_dir = os.path.dirname(os.path.abspath(__file__))
         current_path = base_dir
 
@@ -103,8 +103,60 @@ class BinanceDataFetcher:
         # 初始化 Binance SDK Client (获取公开市场数据不需要 API Key)
         self.client = Client()
 
+        # configure logger: prefer provided logger (wrapped), otherwise use safe internal logger
+        if logger is None:
+            self.logger = _get_safe_logger(__name__)
+        else:
+            # wrap the provided logger so that I/O errors in handlers don't crash us
+            class _ProvidedSafeLogger:
+                def __init__(self, underlying):
+                    self._underlying = underlying
+
+                def info(self, msg, *args, **kwargs):
+                    try:
+                        self._underlying.info(msg, *args, **kwargs)
+                    except Exception:
+                        try:
+                            print(str(msg))
+                        except Exception:
+                            pass
+
+                def warning(self, msg, *args, **kwargs):
+                    try:
+                        self._underlying.warning(msg, *args, **kwargs)
+                    except Exception:
+                        try:
+                            print("WARNING:", str(msg))
+                        except Exception:
+                            pass
+
+                def exception(self, msg, *args, **kwargs):
+                    try:
+                        self._underlying.exception(msg, *args, **kwargs)
+                    except Exception:
+                        try:
+                            if args:
+                                print("EXCEPTION:", str(msg), args)
+                            else:
+                                print("EXCEPTION:", str(msg))
+                        except Exception:
+                            pass
+
+            try:
+                self.logger = _ProvidedSafeLogger(logger)
+            except Exception:
+                self.logger = _get_safe_logger(__name__)
+
+    def show_data(self, df, num_rows=5):
+        logger = self.logger
+        if df is not None and not df.empty:
+            logger.info(f"{num_rows} of head:\n{df.head(num_rows)}")
+            logger.info(f"{num_rows} of tail:\n{df.tail(num_rows)}")
+        else:
+            logger.info("empty df or None")
+
     def _add_technical_indicators(self, df):
-        logger = _get_safe_logger(__name__)
+        logger = self.logger
         try:
             df['return_rate'] = df['close'].pct_change()
             df['log_return'] = np.log(df['close'] / df['close'].shift(1))
@@ -148,7 +200,7 @@ class BinanceDataFetcher:
         获取当前时刻往前推的最新 K 线数据 (包含 buy_volume 和 sell_volume)
         :param limit: 获取的数据条数（最高 2000 条）
         """
-        logger = _get_safe_logger(__name__)
+        logger = self.logger
         logger.info(f"Fetching recent {limit} candles for {symbol} ({interval}) via SDK...")
 
         try:

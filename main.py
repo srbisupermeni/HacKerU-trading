@@ -67,7 +67,8 @@ ml_manager = DualMLLiveManager(portfolio, execution)
 obi_strategy = ObiDynamicStrategy(portfolio, execution)
 
 vision_fetcher = VisionFetcher()
-realtime_fetcher = BinanceDataFetcher()
+# pass the main logger into the realtime fetcher so main controls logging
+realtime_fetcher = BinanceDataFetcher(logger=logger)
 
 # ==========================================
 # 核心数据管道：冷热双轨内存池 (隔离多周期)
@@ -146,9 +147,8 @@ def main():
     while True:
         start = time.time()
         loop_counter += 1
+        current_time = datetime.now()
         try:
-            current_time = datetime.now()
-
             # Determine if this loop should run the 15-minute (OBI) strategy.
             # With a 5-minute base loop, run OBI every 3 loops -> 15 minutes.
             obi_turn = (loop_counter % 3 == 0)
@@ -156,7 +156,11 @@ def main():
             try:
                 if obi_turn:
                     # 1) Update 15m data and run OBI first
-                    sim_data_15m = update_realtime_data(obi_coins, interval="15m", target_dict=global_market_data_15m)
+                    try:
+                        sim_data_15m = update_realtime_data(obi_coins, interval="15m", target_dict=global_market_data_15m)
+                    except Exception:
+                        logging.getLogger(__name__).exception("Exception while updating 15m realtime data")
+                        sim_data_15m = None
 
                     if sim_data_15m:
                         # Use 15m prices for OBI valuation
@@ -179,7 +183,11 @@ def main():
                     time.sleep(60)
 
                     # 3) Update 5m data and run ML after the brief pause
-                    sim_data_5m = update_realtime_data(ml_coins, interval="5m", target_dict=global_market_data_5m)
+                    try:
+                        sim_data_5m = update_realtime_data(ml_coins, interval="5m", target_dict=global_market_data_5m)
+                    except Exception:
+                        logging.getLogger(__name__).exception("Exception while updating 5m realtime data (after OBI)")
+                        sim_data_5m = None
 
                     if sim_data_5m:
                         # Merge price sources: prefer 5m, fallback to 15m for missing coins
@@ -205,7 +213,11 @@ def main():
 
                 else:
                     # Normal loop: update 5m data and run ML only
-                    sim_data_5m = update_realtime_data(ml_coins, interval="5m", target_dict=global_market_data_5m)
+                    try:
+                        sim_data_5m = update_realtime_data(ml_coins, interval="5m", target_dict=global_market_data_5m)
+                    except Exception:
+                        logging.getLogger(__name__).exception("Exception while updating 5m realtime data")
+                        sim_data_5m = None
 
                     if sim_data_5m:
                         current_prices = {c: float(df.iloc[-1]["close"]) for c, df in sim_data_5m.items() if not df.empty}
