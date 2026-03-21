@@ -104,20 +104,38 @@ def run_bot_loop(client, portfolio, engine, strategies, loop_sleep_seconds: floa
 
             else:
                 try:
+                    # Get pending counts from both the client and our local engine snapshot
                     resp_pending = client.get_pending_count()
+                    engine_pending = engine.get_pending_orders_snapshot()
+
+                    # parse exchange pending total
+                    resp_total = 0
                     if isinstance(resp_pending, dict):
                         try:
-                            total = int(resp_pending.get('TotalPending', 0))
+                            resp_total = int(resp_pending.get('TotalPending', 0))
                         except Exception:
-                            total = 0
-                        has_pending = total > 0
-                    else:
+                            resp_total = 0
+
+                    # parse engine pending total
+                    engine_total = 0
+                    if isinstance(engine_pending, dict):
+                        try:
+                            engine_total = sum(len(v) for v in engine_pending.values())
+                        except Exception:
+                            engine_total = 0
+
+                    # If both sides report zero pending orders, nothing to do
+                    if resp_total == 0 and engine_total == 0:
                         has_pending = False
+                    else:
+                        # There's something to reconcile (mismatch or non-empty) — poll/process
+                        has_pending = True
                 except Exception:
                     logging.getLogger(__name__).exception("failed to get pending count from client")
                     has_pending = False
 
                 if has_pending:
+                    # Only run the heavier reconciliation polling at most once per minute
                     if now - last_execution_time_stamp >= 60:
                         try:
                             resp = client.query_order()

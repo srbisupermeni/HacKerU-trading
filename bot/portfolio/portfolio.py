@@ -4,7 +4,7 @@ from typing import Dict, Any, Optional
 
 # Attempt to import Roostoo client for on-demand ticker fetching
 try:
-    from bot.api.roostoo import Roostoo
+    from HacKerU_bot.api.roostoo import Roostoo
 except Exception:
     Roostoo = None
 
@@ -204,28 +204,100 @@ class Portfolio:
 
     # ================= 持仓管理 =================
 
-    def update_positions(self, new_positions: Dict[str, Dict[str, float]] = None):
+    def update_positions(self):
         """
-        批量更新持仓信息（从交易所同步）
-        
-        参数：
-            new_positions: 新的持仓字典 {coin: {'free': float, 'locked': float}, ...}
-        
-        示例：
-            portfolio.update_positions({
-                'BTC': {'free': 1.5, 'locked': 0.5},
-                'ETH': {'free': 10.0, 'locked': 0.0}
-            })
+        从交易所拉取余额并更新本地持仓（positions）。
+
+        方法不接受参数，会优先使用挂载在 self.execution.client 的 Roostoo 实例，
+        如果不存在则尝试按需实例化 `HacKerU_bot.api.roostoo.Roostoo`。
+
+        期望的返回格式示例（来自 Roostoo.get_balance）：
+        {
+          "Success": true,
+          "ErrMsg": "",
+          "Wallet": {
+            "BTC": {"Free": 0.454878, "Lock": 0.555},
+            "ETH": {"Free": 0, "Lock": 0},
+            "USD": {"Free": 98389854.152001, "Lock": 1601798.197999}
+          }
+        }
+
+        返回:
+            True - 更新成功
+            False - 失败（并记录日志）
         """
-        self.positions = new_positions or self.positions
+        # 获取可用的 Roostoo 客户端
+        roostoo_client = None
+        if getattr(self, 'execution', None) is not None:
+            roostoo_client = getattr(self.execution, 'client', None)
+
+        if roostoo_client is None and Roostoo is not None:
+            try:
+                roostoo_client = Roostoo()
+            except Exception as e:
+                self.logger.warning(f"无法实例化 Roostoo 客户端: {e}")
+
+        if roostoo_client is None:
+            self.logger.error("没有可用的 Roostoo 客户端，无法更新持仓。")
+            return False
+
+        try:
+            resp = roostoo_client.get_balance()
+        except Exception as e:
+            self.logger.warning(f"调用 Roostoo.get_balance() 失败: {e}")
+            return False
+
+        if not resp or not isinstance(resp, dict):
+            self.logger.warning(f"从 Roostoo 获取余额失败或返回格式不正确: {resp}")
+            return False
+
+        # 兼容字段名：优先使用 'Wallet'，也尝试 'Data' 或 'data'
+        wallet = resp.get('Wallet') or resp.get('Data') or resp.get('data') or {}
+        if not isinstance(wallet, dict):
+            self.logger.warning(f"余额响应中未找到 Wallet 字段或格式错误: {wallet}")
+            return False
+
+        updated = {}
+        for coin, info in wallet.items():
+            if not coin or not isinstance(info, dict):
+                continue
+            free = 0.0
+            locked = 0.0
+            try:
+                # 可能字段名为 'Free' / 'free'
+                free = float(info.get('Free', info.get('free', 0.0)))
+            except Exception:
+                free = 0.0
+
+            try:
+                locked = float(info.get('Lock', info.get('lock', 0.0)))
+            except Exception:
+                locked = 0.0
+
+            self.positions[coin] = {'free': free, 'locked': locked}
+            updated[coin] = {'free': free, 'locked': locked}
+
+            # 如果是计价货币（例如 USD），更新 account_balance
+            try:
+                if coin.upper() == self.account_currency.upper():
+                    self.account_balance = free
+            except Exception:
+                pass
+
+        if updated:
+            self.logger.info(f"更新持仓: {updated}")
+            return True
+        else:
+            self.logger.info("没有从余额响应中解析到有效的持仓信息。")
+            return False
 
     def get_position(self, coin: str) -> Dict[str, float]:
         """
         获取指定币种的详细持仓信息（包含成本和收益）
-        
+
         参数：
             coin: 币种代码，例如 'BTC'
-        
+
         返回：
             {
                 'free': 可用数量,
@@ -286,7 +358,7 @@ class Portfolio:
                                  fee_amount: float = 0.0, fee_currency: str = None, fee_percent: float = None):
         """
         在订单被成交后由执行引擎调用，更新持仓、成本和 PnL
-        
+
         参数：
             coin: 币种代码
             strategy_id: 策略 ID
@@ -575,7 +647,7 @@ class Portfolio:
     def get_pnl_snapshot(self) -> Dict[str, Any]:
         """
         获取所有币种的 PnL 汇总
-        
+
         返回：
         {
             'BTC': {
@@ -628,10 +700,10 @@ class Portfolio:
     def get_transaction_history(self, coin: str = None) -> Dict[str, Any]:
         """
         获取交易历史
-        
+
         参数：
             coin: 可选，指定币种；如果不提供则返回所有币种
-        
+
         返回：
         {
             'BTC': {
@@ -660,10 +732,10 @@ class Portfolio:
     def get_cost_basis(self, coin: str) -> Dict[str, Any]:
         """
         获取币种的成本基础信息
-        
+
         参数：
             coin: 币种代码
-        
+
         返回：
         {
             'total_quantity': 持仓数量,

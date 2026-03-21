@@ -1,14 +1,14 @@
-import requests
-import time
-import hmac
 import hashlib
-import yaml
-import os
-import sys
-from pathlib import Path
+import hmac
 import logging
-from logging.handlers import TimedRotatingFileHandler
+import sys
+import time
 from collections import deque
+from logging.handlers import TimedRotatingFileHandler
+from pathlib import Path
+
+import requests
+import yaml
 
 """
     Roostoo 实时数据 API 客户端类
@@ -69,8 +69,9 @@ from collections import deque
 ROOT = Path(__file__).parent.parent.parent
 sys.path.append(str(ROOT))
 
+
 class Roostoo:
-    def __init__(self, config_path=ROOT/"bot/config/roostoo.yaml"):
+    def __init__(self, config_path=ROOT / "bot/config/roostoo.yaml"):
         self._setup_logger()
 
         self.request_times = deque(maxlen=30)
@@ -78,73 +79,73 @@ class Roostoo:
         self.request_timeout = 5
 
         self._load_config(config_path)
-    
+
     def _setup_logger(self):
         """配置按天滚动的日志系统，并将日志强制存储到 bot/logs 文件夹中"""
-       
+
         current_dir = Path(__file__).resolve().parent
         log_dir = current_dir.parent / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
-        
+
         self.logger = logging.getLogger("RoostooBot")
         self.logger.setLevel(logging.INFO)
-        
+
         # 防止重复添加 Handler
         if not self.logger.handlers:
             # 拼接完整的日志文件绝对路径
             log_file = log_dir / "roostoo.log"
-            
+
             # 使用 str(log_file) 传入绝对路径
             file_handler = TimedRotatingFileHandler(
-                filename=str(log_file), 
-                when="midnight", 
-                interval=1, 
+                filename=str(log_file),
+                when="midnight",
+                interval=1,
                 encoding="utf-8"
             )
             file_handler.suffix = "%Y-%m-%d"
-            
+
             console_handler = logging.StreamHandler()
-            
+
             # 日志格式
             formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
             file_handler.setFormatter(formatter)
             console_handler.setFormatter(formatter)
-            
+
             self.logger.addHandler(file_handler)
             self.logger.addHandler(console_handler)
-            
+
         self.logger.info(f"Roostoo API logs initialized in: {log_dir}")
 
     def _load_config(self, config_path):
         try:
             with open(config_path, "r", encoding="utf-8") as f:
                 config = yaml.safe_load(f) or {}
-                
+
             rst_config = config.get('roostoo', {})
             self.base_url = rst_config.get('base_url', "https://mock-api.roostoo.com")
             self.api_key = rst_config.get('api_key')
             self.secret_key = rst_config.get('secret_key')
-            
+
             if not self.api_key or not self.secret_key:
                 raise ValueError("API Key  Secret Key not found in yaml file")
-                
+
         except FileNotFoundError:
             raise FileNotFoundError(f"yaml not found: {config_path}")
-        
-    #rate limits & request base
+
+    # rate limits & request base
     def _enforce_global_rate_limit(self):
         """执行全局 30次/分钟 限制"""
         now = time.time()
         # 移除 60 秒之前的记录
         while self.request_times and now - self.request_times[0] > 60:
             self.request_times.popleft()
-            
+
         if len(self.request_times) >= 30:
             wait_time = 60 - (now - self.request_times[0])
             if wait_time > 0:
                 self.logger.warning(f"limits rate under 30/min, wait: {wait_time:.2f} seconds")
                 time.sleep(wait_time)
-                
+
         # 记录本次请求的时间戳
         self.request_times.append(time.time())
 
@@ -155,25 +156,24 @@ class Roostoo:
     def _make_request(self, method, url, headers=None, params=None, data=None):
         """统一的网络请求封装，自动处理全局限速和异常拦截"""
         self._enforce_global_rate_limit()
-        
+
         try:
             if method.upper() == 'GET':
                 res = requests.get(url, headers=headers, params=params, timeout=self.request_timeout)
             else:
                 res = requests.post(url, headers=headers, data=data, timeout=self.request_timeout)
-                
+
             res.raise_for_status()
             response_data = res.json()
             # 可以根据需要决定是否要打印每一次成功的请求
-            self.logger.info(f"executed: [{method}] {url}") 
+            self.logger.info(f"executed: [{method}] {url}")
             return response_data
-            
+
         except requests.exceptions.RequestException as e:
             self.logger.error(f"fail: [{method}] {url} - {e}")
             if e.response is not None:
                 self.logger.error(f"server return: {e.response.text}")
             return None
-
 
     # ------------------------------
     # 内部工具方法 (Utility Functions)
@@ -188,7 +188,7 @@ class Roostoo:
         """
         if payload is None:
             payload = {}
-            
+
         payload['timestamp'] = self._get_timestamp()
         sorted_keys = sorted(payload.keys())
         total_params = "&".join(f"{k}={payload[k]}" for k in sorted_keys)
@@ -239,8 +239,8 @@ class Roostoo:
 
     def place_order(self, pair_or_coin, side, quantity, price=None, order_type=None):
         """下达限价 (LIMIT) 或市价 (MARKET) 订单"""
-        self._enforce_order_rate_limit() 
-        
+        self._enforce_order_rate_limit()
+
         url = f"{self.base_url}/v3/place_order"
         pair = f"{pair_or_coin}/USD" if "/" not in pair_or_coin else pair_or_coin
 
@@ -265,12 +265,12 @@ class Roostoo:
 
         self.logger.info(f"Preparing to place order: {side.upper()} {quantity} {pair} @ {price if price else 'MARKET'}")
         result = self._make_request('POST', url, headers=headers, data=total_params)
-        
+
         if result and result.get('Success'):
             self.logger.info(f"Order placed successfully! Details: {result}")
         else:
             self.logger.error(f"Failed to place order or received unexpected response: {result}")
-            
+
         return result
 
     def query_order(self, order_id=None, pair=None, pending_only=None):
@@ -298,47 +298,6 @@ class Roostoo:
 
         headers, _, total_params = self._get_signed_headers(payload)
         headers['Content-Type'] = 'application/x-www-form-urlencoded'
-        
+
         self.logger.info(f"Trying to cancel order: OrderID={order_id}, Pair={pair}")
         return self._make_request('POST', url, headers=headers, data=total_params)
-
-
-# ------------------------------
-# Demo Section
-# ------------------------------
-if __name__ == "__main__":
-    # 初始化客户端，默认会去 "config/config.yaml" 找配置文件
-    client = Roostoo()
-
-    print("\n--- Checking Server Time ---")
-    print(client.check_server_time())
-
-    print("\n--- Getting Exchange Info ---")
-    info = client.get_exchange_info()
-    if info:
-        print(f"Available Pairs: {list(info.get('TradePairs', {}).keys())}")
-
-    print("\n--- Getting Market Ticker (BTC/USD) ---")
-    ticker = client.get_ticker("BTC/USD")
-    if ticker:
-        print(ticker.get("Data", {}).get("BTC/USD", {}))
-
-    print("\n--- Getting Account Balance ---")
-    print(client.get_balance())
-
-    # 测试下单
-    # print(client.place_order("BNB/USD", "BUY", 1))
-
-    client.logger.info("demo execution")
-    
-    # 获取余额
-    balance = client.get_balance()
-    client.logger.info(f"balance: {balance}")
-
-    # 获取行情
-    ticker = client.get_ticker("BTC/USD")
-    client.logger.info(f"BTC real time price: {ticker.get('Data', {}).get('BTC/USD', {}).get('LastPrice')}")
-    
-    # 如果你想测试挂单限制，可以解除下面代码的注释并运行：
-    # client.place_order("BNB/USD", "BUY", 1) 
-    # client.place_order("BNB/USD", "SELL", 1) # 这里会触发挂单限速等待近60秒

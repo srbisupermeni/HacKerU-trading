@@ -16,6 +16,30 @@
 2026-03-21 01:56:12,932 - INFO - Roostoo API logs initialized in: D:\商赛\SG vs HK\HacKerU-trading\bot\logs
 2026-03-21 01:56:24,069 - INFO - Roostoo API logs initialized in: D:\商赛\SG vs HK\HacKerU-trading\bot\logs
 2026-03-21 02:09:52,298 - INFO - Roostoo API logs initialized in: D:\商赛\SG vs HK\HacKerU-trading\bot\logs
+2026-03-21 09:45:33,347 - INFO - Roostoo API logs initialized in: /Users/luisng/PycharmProjects/HacKerU-trading/bot/logs
+2026-03-21 09:45:33,356 - ERROR - fail: [GET] http://127.0.0.1:8000/v3/exchangeInfo - HTTPConnectionPool(host='127.0.0.1', port=8000): Max retries exceeded with url: /v3/exchangeInfo (Caused by NewConnectionError("HTTPConnection(host='127.0.0.1', port=8000): Failed to establish a new connection: [Errno 61] Connection refused"))
+2026-03-21 09:45:33,357 - ERROR - fail: [POST] http://127.0.0.1:8000/v3/query_order - HTTPConnectionPool(host='127.0.0.1', port=8000): Max retries exceeded with url: /v3/query_order (Caused by NewConnectionError("HTTPConnection(host='127.0.0.1', port=8000): Failed to establish a new connection: [Errno 61] Connection refused"))
+2026-03-21 09:45:34,360 - ERROR - fail: [POST] http://127.0.0.1:8000/v3/query_order - HTTPConnectionPool(host='127.0.0.1', port=8000): Max retries exceeded with url: /v3/query_order (Caused by NewConnectionError("HTTPConnection(host='127.0.0.1', port=8000): Failed to establish a new connection: [Errno 61] Connection refused"))
+2026-03-21 09:45:35,362 - ERROR - fail: [POST] http://127.0.0.1:8000/v3/query_order - HTTPConnectionPool(host='127.0.0.1', port=8000): Max retries exceeded with url: /v3/query_order (Caused by NewConnectionError("HTTPConnection(host='127.0.0.1', port=8000): Failed to establish a new connection: [Errno 61] Connection refused"))
+2026-03-21 09:45:36,364 - ERROR - fail: [POST] http://127.0.0.1:8000/v3/query_order - HTTPConnectionPool(host='127.0.0.1', port=8000): Max retries exceeded with url: /v3/query_order (Caused by NewConnectionError("HTTPConnection(host='127.0.0.1', port=8000): Failed to establish a new connection: [Errno 61] Connection refused"))
+2026-03-21 09:45:37,366 - ERROR - fail: [POST] http://127.0.0.1:8000/v3/query_order - HTTPConnectionPool(host='127.0.0.1', port=8000): Max retries exceeded with url: /v3/query_order (Caused by NewConnectionError("HTTPConnection(host='127.0.0.1', port=8000): Failed to establish a new connection: [Errno 61] Connection refused"))
+2026-03-21 09:45:38,369 - ERROR - fail: [POST] http://127.0.0.1:8000/v3/query_order - HTTPConnectionPool(host='127.0.0.1', port=8000): Max retries exceeded with url: /v3/query_order (Caused by NewConnectionError("HTTPConnection(host='127.0.0.1', port=8000): Failed to establish a new connection: [Errno 61] Connection refused"))
+2026-03-21 09:45:39,373 - ERROR - fail: [POST] http://127.0.0.1:8000/v3/query_order - HTTPConnectionPool(host='127.0.0.1', port=8000): Max retries exceeded with url: /v3/query_order (Caused by NewConnectionError("HTTPConnection(host='127.0.0.1', port=8000): Failed to establish a new connection: [Errno 61] Connection refused"))
+2026-03-21 09:45:40,376 - ERROR - fail: [POST] http://127.0.0.1:8000/v3/query_order - HTTPConnectionPool(host='127.0.0.1', port=8000): Max retries exceeded with url: /v3/query_order (Caused by NewConnectionError("HTTPConnection(host='127.0.0.1', port=8000): Failed to establish a new connection: [Errno 61] Connection refused"))
+2026-03-21 09:45:41,378 - ERROR - fail: [POST] http://127.0.0.1:8000/v3/query_order - HTTPConnectionPool(host='127.0.0.1', port=8000): Max retries exceeded with url: /v3/query_order (Caused by NewConnectionError("HTTPConnection(host='127.0.0.1', port=8000): Failed to establish a new connection: [Errno 61] Connection refused"))
+2026-03-21 09:46:51,975 - INFO - Roostoo API logs initialized in: /Users/luisng/PycharmProjects/HacKerU-trading/bot/logs
+2026-03-21 09:46:52,808 - INFO - executed: [GET] https://mock-api.roostoo.com/v3/exchangeInfo
+2026-03-21 09:46:53,644 - ERROR - fail: [POST] https://mock-api.roostoo.com/v3/query_order - 401 Client Error: Unauthorized for url: https://mock-api.roostoo.com/v3/query_order
+2026-03-21 09:46:53,644 - ERROR - server return: signature error
+2026-03-21 09:46:54,986 - ERROR - fail: [POST] https://mock-api.roostoo.com/v3/query_order - 401 Client Error: Unauthorized for url: https://mock-api.roostoo.com/v3/query_order
+2026-03-21 09:46:54,986 - ERROR - server return: signature error
+2026-03-21 09:46:56,477 - ERROR - fail: [POST] https://mock-api.roostoo.com/v3/query_order - 401 Client Error: Unauthorized for url: https://mock-api.roostoo.com/v3/query_order
+2026-03-21 09:46:56,477 - ERROR - server return: signature error
+2026-03-21 09:47:20,507 - INFO - Roostoo API logs initialized in: /Users/luisng/PycharmProjects/HacKerU-trading/bot/logs
+2026-03-21 09:47:21,072 - INFO - executed: [GET] https://mock-api.roostoo.com/v3/exchangeInfo
+2026-03-21 09:47:21,409 - ERROR - fail: [POST] https://mock-api.roostoo.com/v3/query_order - 401 Client Error: Unauthorized for url: https://mock-api.roostoo.com/v3/query_order
+2026-03-21 09:47:21,409 - ERROR - server return: signature error
+2026-03-21 11:05:57,835 - INFO - Roostoo API logs initialized in: /Users/luisng/PycharmProjects/HacKerU-trading/bot/logs
 2026-03-21 02:19:23,723 - INFO - Roostoo API logs initialized in: D:\商赛\SG vs HK\HacKerU-trading\bot\logs
 2026-03-21 11:29:40,954 - INFO - Roostoo API logs initialized in: D:\商赛\SG vs HK\HacKerU-trading\bot\logs
 2026-03-21 12:13:25,686 - INFO - Roostoo API logs initialized in: D:\商赛\SG vs HK\HacKerU-trading\bot\logs
