@@ -1,9 +1,11 @@
-import sys
 import logging
-import pandas as pd
-import numpy as np
-from datetime import datetime, timedelta
+import sys
+import time
+from datetime import datetime
 from pathlib import Path
+from typing import Any
+
+import pandas as pd
 
 # ==========================================
 # 路径兼容处理
@@ -12,10 +14,8 @@ ROOT = Path(__file__).resolve().parent.parent.parent
 if str(ROOT) not in sys.path:
     sys.path.append(str(ROOT))
 
-from database.Binance_Vision_fetcher import VisionFetcher
 from bot.portfolio.portfolio import Portfolio
 from bot.execution.execution_engine import ExecutionEngine
-from bot.api.roostoo import Roostoo
 
 class ObiDynamicStrategy:
     """
@@ -66,6 +66,27 @@ class ObiDynamicStrategy:
         # 标的锁定状态
         self.focused_coin = None
         self.focused_hp = None
+        # persistent timestamp to enforce minimum time between actual order executions
+        self.last_execution_time = None
+
+    def _call_with_rate_limit(self, fn, *args, **kwargs):
+        """Call a function while enforcing a strict >=60 second spacing between calls.
+
+        This replaces repeated ad-hoc checks and avoids using int(...) which truncates
+        fractional seconds and can lead to calls earlier than 60s.
+        """
+        # compute how long to wait (respect fractional seconds)
+        if self.last_execution_time is not None:
+            elapsed = (datetime.now() - self.last_execution_time).total_seconds()
+            to_wait = 60.0 - elapsed
+            if to_wait > 0:
+                # sleep the exact remaining fractional seconds
+                time.sleep(to_wait)
+
+        # perform the call and update last_execution_time
+        res = fn(*args, **kwargs)
+        self.last_execution_time = datetime.now()
+        return res
 
     def is_btc_active(self, df_btc: pd.DataFrame) -> bool:
         """判断 BTC 是否活跃的 Regime Filter"""
@@ -78,7 +99,7 @@ class ObiDynamicStrategy:
         ret = (close.iloc[-1] / close.iloc[-20] - 1) * 100
         return sum([close.iloc[-1] > ema20, vol_short > vol_long * 0.85, ret > -5]) >= 2
 
-    def compute_obi_indicators(self, df: pd.DataFrame, hp: dict) -> dict:
+    def compute_obi_indicators(self, df: pd.DataFrame, hp: dict) -> dict[str | Any, float | bool | Any] | None:
         """核心指标计算（Pandas 矢量化近似形态法）"""
         if len(df) < 60:
             return None
@@ -176,7 +197,8 @@ class ObiDynamicStrategy:
                 
             if exit_triggered:
                 order = self.portfolio.create_order(self.focused_coin, "SELL", self.pos_qty, order_type="MARKET", strategy_id=self.strategy_id)
-                res = self.portfolio.execute_order(order)
+                # enforce >=60s between actual execute_order calls
+                res = self._call_with_rate_limit(self.portfolio.execute_order, order)
                 if res.get('success'):
                     pnl = self.pos_qty * (exit_price - self.pos_entry)
                     self.logger.info(f"✅ [{self.focused_coin} 已平仓] | {reason} | PnL ≈ ${pnl:+.2f}")
@@ -221,81 +243,19 @@ class ObiDynamicStrategy:
                 quantity = round(invest_amount / buy_price, 4)
                 
                 order = self.portfolio.create_order(self.focused_coin, "BUY", quantity, price=buy_price, order_type="LIMIT", strategy_id=self.strategy_id)
-                res = self.portfolio.execute_order(order)
-                
-                if res.get('success'):
-                    self.logger.info(f"🚀 全仓买入成功！ {self.focused_coin} @ {buy_price:.4f} × {quantity:.6f}")
-                    self.logger.info(f"   SL = {sl_price:.4f}   TP = {tp_price:.4f}")
-                    
-                    self.pos_qty = quantity
-                    self.pos_entry = buy_price
-                    self.pos_sl = sl_price
-                    self.pos_tp = tp_price
-                    self.last_trade_index = self.current_index
+                # enforce >=60s between actual execute_order calls
+                order_id = self._call_with_rate_limit(self.portfolio.execute_order, order)['order_id']
+                res = self._call_with_rate_limit(self.execution.client.query_order(pending_only=True))
+                if res:
+                    response = self.execution.process_query_response(res)
+                    for r in response:
+                        if r.get('order_id') == order_id and r.get('status') != 'CANCELED' and not r.get('processed'):
+                            self.logger.info(f"🚀 全仓买入成功！ {self.focused_coin} @ {buy_price:.4f} × {quantity:.6f}")
+                            self.logger.info(f"   SL = {sl_price:.4f}   TP = {tp_price:.4f}")
 
-
-# ==========================================
-# 本地极速全景推演 (__main__)
-# ==========================================
-if __name__ == "__main__":
-    print("\n" + "="*60)
-    print("🏆 OBI 动态标的版：拉取 Vision 数据进行本地回测推演")
-    print("="*60)
-    
-    roostoo_client = Roostoo()
-    portfolio = Portfolio(execution_module=None) 
-    portfolio.account_balance = 25000.0          
-    execution = ExecutionEngine(portfolio, roostoo_client)
-    portfolio.execution = execution 
-    
-    strat = ObiDynamicStrategy(portfolio, execution, alloc_ratio=0.50)
-    
-    test_interval = "15m" 
-    
-    print(f"\n⏳ 正在通过 Vision 获取 BTC, ETH, TAO 过去 15 天的 {test_interval} 数据...")
-    fetcher = VisionFetcher()
-    end_date = datetime.today()
-    start_date = end_date - timedelta(days=15)
-    
-    sim_data = {}
-    for c in ["BTC", "ETH", "TAO"]:
-        df = fetcher.fetch_klines_range(
-            symbol=f"{c}USDT", interval=test_interval, 
-            start_year=start_date.year, start_month=start_date.month, start_day=start_date.day,
-            end_year=end_date.year, end_month=end_date.month, end_day=end_date.day, data_type="daily"
-        )
-        if df is not None and not df.empty:
-            df['open_time'] = pd.to_datetime(df['open_time'])
-            sim_data[c] = df.set_index('open_time', drop=False)
-            
-    if len(sim_data) < 3:
-        print("⚠️ 数据获取失败，请检查网络或 Vision 源。")
-        sys.exit()
-        
-    print(f"✅ 拉取成功！开始极速推演...")
-    
-    # 模拟主循环时间步推进
-    base_idx = sim_data["BTC"].index
-    start_idx = 120 # 预留指标预热窗口
-    
-    for i in range(start_idx, len(base_idx)):
-        current_time = base_idx[i]
-        
-        # 截取该时间点之前的数据切片喂给策略
-        current_sim_data = {}
-        for c in ["BTC", "ETH", "TAO"]:
-            current_sim_data[c] = sim_data[c].iloc[:i+1]
-            
-        # 这里为了回测简化，直接将可用余额作为 total_equity 传入
-        # 实盘中 main.py 会计算真实的 total_equity 传入
-        current_equity = portfolio.account_balance
-        if strat.pos_qty > 0 and strat.focused_coin:
-            current_equity += strat.pos_qty * current_sim_data[strat.focused_coin].iloc[-1]['close']
-            
-        strat.on_tick(current_sim_data, current_equity)
-        
-    roi = (portfolio.account_balance - 25000.0) / 25000.0 * 100
-    print("\n" + "="*40)
-    print(f"🏁 {test_interval} 级别 15天深度推演结束！")
-    print(f"最终净值: ${portfolio.account_balance:.2f} (ROI: {roi:.2f}%)")
-    print("="*40)
+                            self.pos_qty = quantity
+                            self.pos_entry = buy_price
+                            self.pos_sl = sl_price
+                            self.pos_tp = tp_price
+                            self.last_trade_index = self.current_index
+                            break
