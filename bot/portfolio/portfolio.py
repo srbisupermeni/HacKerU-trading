@@ -4,7 +4,7 @@ from typing import Dict, Any, Optional
 
 # Attempt to import Roostoo client for on-demand ticker fetching
 try:
-    from HacKerU_bot.api.roostoo import Roostoo
+    from bot.api.roostoo import Roostoo
 except Exception:
     Roostoo = None
 
