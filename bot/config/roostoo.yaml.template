@@ -1,0 +1,5 @@
+roostoo:
+  base_url: "${ROOSTOO_BASE_URL:-https://mock-api.roostoo.com}"
+  api_key: "${ROOSTOO_API_KEY}"
+  secret_key: "${ROOSTOO_SECRET_KEY}"
+

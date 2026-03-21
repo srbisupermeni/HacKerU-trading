@@ -118,7 +118,11 @@ def main():
     # Auto-refresh interval selector (ms)
     interval = st.sidebar.selectbox('Auto-refresh interval', options=[0, 2000, 5000, 10000], index=2)
     if interval and interval > 0:
-        st.experimental_rerun()
+        rerun = getattr(st, 'experimental_rerun', None)
+        if callable(rerun):
+            rerun()
+        else:
+            st.sidebar.info('Auto-refresh requires Streamlit with `experimental_rerun` support.')
 
     state = _read_state(file_path)
     if not state:
