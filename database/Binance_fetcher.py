@@ -28,48 +28,51 @@ fetcher.show_data(recent_df)
 =============================================================================
 """
 
+import logging
+import os
+
 import numpy as np
 import pandas as pd
-import os
-import logging
-from datetime import datetime
-from binance.client import Client 
+from binance.client import Client
 
 
 # Helper to obtain a logger but avoid raising OSError if the logging system's handlers
 # are misconfigured or the filesystem is not writable. Falls back to a simple printer.
 def _get_safe_logger(name):
-    # Be defensive: some environments raise I/O errors when logging handlers attempt to
-    # write (e.g. failing mount or device). Return a dummy logger if anything goes wrong.
-    try:
-        lg = logging.getLogger(name)
-        # probe a harmless emit to detect handler I/O issues early
-        try:
-            for h in lg.handlers:
-                # try formatting a short message using the handler to exercise its emit path
-                if hasattr(h, 'formatter') and h.formatter is not None:
-                    h.formatter.format(logging.LogRecord(name, logging.INFO, __file__, 0, "", None, None))
-        except Exception:
-            # handler emitted an error; fall through to dummy
-            raise
-        return lg
-    except Exception:
-        class _DummyLogger:
-            def info(self, msg, *args, **kwargs):
+    # Return a small wrapper that delegates to the real logger but protects
+    # against I/O errors raised by handlers (for example when a FileHandler's
+    # underlying filesystem is unavailable). Any exception during logging will
+    # be caught and the message will be printed to stdout as a fallback.
+    lg = logging.getLogger(name)
+
+    class _SafeLogger:
+        def __init__(self, underlying):
+            self._underlying = underlying
+
+        def info(self, msg, *args, **kwargs):
+            try:
+                self._underlying.info(msg, *args, **kwargs)
+            except Exception:
                 try:
                     print(str(msg))
                 except Exception:
                     pass
 
-            def warning(self, msg, *args, **kwargs):
+        def warning(self, msg, *args, **kwargs):
+            try:
+                self._underlying.warning(msg, *args, **kwargs)
+            except Exception:
                 try:
                     print("WARNING:", str(msg))
                 except Exception:
                     pass
 
-            def exception(self, msg, *args, **kwargs):
+        def exception(self, msg, *args, **kwargs):
+            try:
+                # Prefer the real logger's exception formatting (which logs stack)
+                self._underlying.exception(msg, *args, **kwargs)
+            except Exception:
                 try:
-                    # prefer to print full exception info if available
                     if args:
                         print("EXCEPTION:", str(msg), args)
                     else:
@@ -77,7 +80,7 @@ def _get_safe_logger(name):
                 except Exception:
                     pass
 
-        return _DummyLogger()
+    return _SafeLogger(lg)
 
 class BinanceDataFetcher:
     def __init__(self):
@@ -99,14 +102,6 @@ class BinanceDataFetcher:
         
         # 初始化 Binance SDK Client (获取公开市场数据不需要 API Key)
         self.client = Client()
-
-    def show_data(self, df, num_rows=5):
-        logger = _get_safe_logger(__name__)
-        if df is not None and not df.empty:
-            logger.info(f"{num_rows} of head:\n{df.head(num_rows)}")
-            logger.info(f"{num_rows} of tail:\n{df.tail(num_rows)}")
-        else:
-            logger.info("empty df or None")
 
     def _add_technical_indicators(self, df):
         logger = _get_safe_logger(__name__)
@@ -231,19 +226,3 @@ class BinanceDataFetcher:
         except Exception:
             logger.exception("Failed to parse klines into DataFrame")
             return None
-
-
-
-
-if __name__ == "__main__":
-    fetcher = BinanceDataFetcher()
-    
-    print("=== 测试获取当前时刻最新的 10 根 1 分钟线 (热数据) ===")
-    recent_df = fetcher.fetch_recent_klines(symbol="BTCUSDT", interval="15m", limit=100)
-    fetcher.show_data(recent_df, num_rows=3)
-
-    
-    print("\n=== 添加技术指标测试 ===")
-    if recent_df is not None:
-        recent_with_indicators = fetcher._add_technical_indicators(recent_df)
-        print([col for col in recent_with_indicators.columns])
