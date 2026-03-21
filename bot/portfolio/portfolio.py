@@ -1,6 +1,6 @@
 import logging
 import time
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 # Attempt to import Roostoo client for on-demand ticker fetching
 try:
@@ -11,26 +11,23 @@ except Exception:
 
 class Portfolio:
     """
-    资产组合管理器 - 管理所有交易账户的资产状态
-    
-    核心功能：
-        1. 管理持仓（每个币种的可用/锁定金额）
-        2. 管理策略参数（每个币种的止损/止盈设置）
-        3. 管理成本基础与 PnL
+    组合（Portfolio）管理器 — 负责本地持仓、成本与 PnL 的记账与查询。
 
-    说明：
-        - 组合层币种锁逻辑已停用，策略层自行控制币种分配
-        - 保留 acquire/release 等方法仅用于兼容旧调用
-    
+    主要职责：
+    - 跟踪每个币种的仓位（free / locked）和成本基础（buy/sell 交易记录、总数量、总成本）。
+    - 在执行引擎调用 `register_order_execution` 时更新持仓、成本和已实现/未实现 PnL。
+    - 提供便捷的方法用于从交易所 `exchangeInfo` 初始化本地缓存以及手动/自动更新行情价格。
+
+    重要说明（当前实现细节）：
+    - 应用层的“币种级锁”由策略层或 `ExecutionEngine` 协同管理；本类保留部分兼容老代码的接口。
+    - Portfolio 提供对 `ExecutionEngine` 的两处便捷代理方法：`create_order` 和 `execute_order`，它们会将调用转发给挂载的 `execution` 实例。
+
     使用示例：
         portfolio = Portfolio(execution_module=engine)
         portfolio.initialize_from_exchange_info(roostoo_client=engine.client)
-        if portfolio.acquire_coin('BTC', 'strategy_1'):
-            # 成功获得 BTC 的锁，可以下单
-            pass
-        else:
-            # BTC 被其他策略占用，请稍后重试
-            pass
+        # 通过 portfolio 创建并执行订单（实际下单由 ExecutionEngine 处理）
+        order = portfolio.create_order('BTC', 'BUY', 0.01, price=50000, strategy_id='s1')
+        result = portfolio.execute_order(order)
     """
 
     def __init__(self, execution_module):
@@ -177,34 +174,33 @@ class Portfolio:
             self.tradable_pairs = {}
             return False
 
-            # -------------------------
-            # Execution helpers (convenience passthroughs)
-            # -------------------------
-            def create_order(self, coin: str, side: str, quantity: float, price: Optional[float] = None,
-                             order_type: Optional[str] = None, strategy_id: str = None,
-                             client_order_id: Optional[str] = None) -> Dict[str, Any]:
-                """Convenience wrapper that delegates to ExecutionEngine.create_order.
+    # -------------------------
+    # Execution helpers (convenience passthroughs)
+    # -------------------------
+    def create_order(self, coin: str, side: str, quantity: float, price: Optional[float] = None,
+                     order_type: Optional[str] = None, strategy_id: str = None,
+                     client_order_id: Optional[str] = None) -> Dict[str, Any]:
+        """
+        便捷包装：创建一个标准化的订单字典（委托给 ExecutionEngine.create_order）。
 
-                Note: ExecutionEngine.create_order performs order validation and returns
-                a standardized order dict. Strategies or the main loop may call
-                portfolio.create_order(...) as an alternative to execution.create_order(...).
-                """
-                if not self.execution:
-                    raise RuntimeError('Execution module not set on Portfolio')
-                return self.execution.create_order(coin=coin, side=side, quantity=quantity,
-                                                  price=price, order_type=order_type,
-                                                  strategy_id=strategy_id, client_order_id=client_order_id)
+        说明：此方法不会直接下单，仅生成一个符合 ExecutionEngine 要求的订单 dict，
+        之后可将该 dict 传给 `execute_order` 或直接由 ExecutionEngine 使用。
+        """
+        if not self.execution:
+            raise RuntimeError('Execution module not set on Portfolio')
+        return self.execution.create_order(coin=coin, side=side, quantity=quantity,
+                                           price=price, order_type=order_type,
+                                           strategy_id=strategy_id, client_order_id=client_order_id)
 
-            def execute_order(self, order: Dict[str, Any]) -> Dict[str, Any]:
-                """Convenience wrapper that delegates to ExecutionEngine.execute_order.
+    def execute_order(self, order: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        便捷包装：将一个已创建的订单 dict 转发给 ExecutionEngine.execute_order 执行下单流程。
 
-                IMPORTANT: The `order` argument must be a dict produced by
-                `ExecutionEngine.create_order(...)`. `ExecutionEngine.execute_order`
-                enforces this contract and will raise ValueError on invalid input.
-                """
-                if not self.execution:
-                    raise RuntimeError('Execution module not set on Portfolio')
-                return self.execution.execute_order(order)
+        注意：参数 `order` 必须是由 `create_order` 或 ExecutionEngine.create_order 生成的字典。
+        """
+        if not self.execution:
+            raise RuntimeError('Execution module not set on Portfolio')
+        return self.execution.execute_order(order)
 
     # ================= 持仓管理 =================
 

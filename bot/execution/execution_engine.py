@@ -10,34 +10,17 @@ from bot.portfolio.portfolio import Portfolio
 
 class ExecutionEngine:
     """
-    执行引擎 - 负责下单和订单管理
-    
-    核心功能：
-        1. 通过 Roostoo API 下单
-        2. 跟踪待处理订单（部分成交、未完全成交的订单）
-        3. 处理订单成交反馈并更新持仓
-    
-    订单生命周期：
-        - FILLED: 完全成交，立即返回
-        - PENDING: 部分成交或未成交，进入待处理队列
-        - 部分成交: 等待后续查询更新
-    
-    使用示例：
-        engine = ExecutionEngine(portfolio, roostoo_client)
-        result = engine.execute_order(
-            coin='BTC',
-            side='BUY',
-            quantity=1.0,
-            price=50000.0,
-            strategy_id='my_strategy',
-            stop_loss=45000.0,
-            take_profit=60000.0
-        )
-        
-        if result['success']:
-            print(f"下单成功: {result['order_id']}")
-            if result.get('remaining_qty', 0) > 0:
-                print(f"部分成交，剩余 {result['remaining_qty']} 未成交")
+    执行引擎（ExecutionEngine）——负责与交易所客户端交互、下单并管理未完成订单队列。
+
+    核心职责：
+    - 使用 `Roostoo` 客户端发起下单请求。
+    - 解析交易所返回的 OrderDetail / OrderMatched，区分完全成交、部分成交与挂单情形。
+    - 在完全成交时调用 `Portfolio.register_order_execution` 更新账本；在部分成交或挂单时，将订单加入本地待处理队列，供后台轮询更新。
+
+    设计要点：
+    - 对 Roostoo 的返回格式使用严格解析器 `_parse_order_obj`，遇到不合规响应会返回错误信息而非隐式忽略。
+    - 待处理订单由 `pending_orders_queue` 管理，按 `"{coin}:{strategy_id}"` 分队列索引，并通过 `_orderid_index` 快速定位。
+    - 该类仅处理下单与订单生命周期相关的逻辑；资金/持仓记账由 `Portfolio` 负责。
     """
 
     def __init__(self, portfolio: Portfolio, roostoo_client: Optional[Roostoo] = None):
@@ -58,13 +41,12 @@ class ExecutionEngine:
         pass
 
     def _parse_order_obj(self, obj: Dict[str, Any]) -> Dict[str, Any]:
-        """Parse a single canonical Roostoo order object (OrderDetail or an element of OrderMatched).
+        """
+        解析单个 Roostoo 订单对象（OrderDetail 或 OrderMatched 的元素），并返回规范化字典。
 
-        This enforces the canonical/official Roostoo field names (case-sensitive) and
-        returns a normalized dict with typed values.
-
-        Required keys: 'OrderID', 'Status', 'Quantity', 'FilledQuantity' (these must exist).
-        Optional keys used if present: 'FilledAverPrice', 'Price', 'CommissionChargeValue', 'CommissionCoin', 'CommissionPercent', 'Side'
+        要求字段（必须存在）：'OrderID', 'Status', 'Quantity', 'FilledQuantity'
+        可选字段（存在时会尝试解析）：'FilledAverPrice', 'Price', 'CommissionChargeValue', 'CommissionCoin', 'CommissionPercent', 'Side'
+        解析失败会抛出 NonConformingRoostooResponse。
         """
         if not isinstance(obj, dict):
             raise self.NonConformingRoostooResponse('Order object is not a dict')
@@ -123,20 +105,11 @@ class ExecutionEngine:
     def create_order(self, coin: str, side: str, quantity: float, price: Optional[float] = None,
                       order_type: Optional[str] = None, strategy_id: str = None,
                       client_order_id: Optional[str] = None) -> Dict[str, Any]:
-        """Create a standardized order dict for strategies to return to the main loop.
+        """
+        创建一个标准化的本地订单对象（便于策略层构造并传入 execute_order）。
 
-        The strategy layer should call this method to construct an order object and
-        return it to the main loop. The main loop can then call
-        `engine.execute_order(order)` or `engine.execute_order(**order)` to actually
-        place the order.
-
-        Returned dict fields:
-            - client_order_id: local id for tracking (string)
-            - coin, side, quantity, price, order_type, strategy_id
-            - created_at: ms timestamp
-            - status: 'CREATED'
-
-        This method performs lightweight validation and normalization.
+        返回的字典包含：client_order_id, coin, side, quantity, price, order_type, strategy_id, created_at, status。
+        该方法做基础参数校验与规范化，但不与交易所交互。
         """
 
         if not coin:
@@ -175,81 +148,16 @@ class ExecutionEngine:
 
     def execute_order(self, order: Dict[str, Any]) -> Dict:
         """
-        下单接口（策略层主要调用此方法）
-        
-        此方法会：
-        1. 调用交易所 API 下单
-        2. 根据成交情况处理（完全成交/部分成交/未成交）
-        3. 返回下单结果
-        
-        参数：
-            coin: 币种代码，例如 'BTC', 'ETH'
-            side: 方向，'BUY' 或 'SELL'
-            quantity: 数量
-            price: 价格（可选）
-                - 如果不提供 price，则自动使用 MARKET 订单
-                - 如果提供 price，则使用 LIMIT 订单
-            order_type: 订单类型（可选），'MARKET' 或 'LIMIT'
-                - 不提供时自动判断（有价格 -> LIMIT，无价格 -> MARKET）
-            strategy_id: 策略 ID（必须提供），用于订单归属追踪
-        
-        返回值：字典，包含：
-            success (bool): 是否成功下单
-            order_id: 交易所返回的订单 ID
-            status: 订单状态 (FILLED/PENDING/等)
-            filled_qty: 已成交数量
-            remaining_qty: 未成交数量（重要！用于判断是否部分成交）
-            queued (bool): 是否在待处理队列中
-            error: 错误代码（失败时）
-            message: 错误信息（失败时）
-            raw: 交易所原始响应
-        
-        返回示例 - 完全成交：
-            {
-                'success': True,
-                'order_id': '123456',
-                'status': 'FILLED',
-                'filled_qty': 1.0,
-                'remaining_qty': 0.0,
-                'raw': {...}
-            }
-        
-        返回示例 - 部分成交：
-            {
-                'success': True,
-                'order_id': '123457',
-                'status': 'PENDING',
-                'filled_qty': 0.5,
-                'remaining_qty': 0.5,
-                'queued': True,
-                'raw': {...}
-            }
-        
-        返回示例 - 失败：
-            {
-                'success': False,
-                'error': 'order_failed',
-                'message': 'Order placement failed'
-            }
-        
-        使用示例：
-            result = engine.execute_order(
-                coin='BTC',
-                side='BUY',
-                quantity=1.0,
-                price=50000.0,
-                strategy_id='strategy_1',
-                stop_loss=45000.0,
-                take_profit=60000.0
-            )
-            
-            if result['success']:
-                if result['remaining_qty'] <= 0:
-                    print(f"订单完全成交: {result['filled_qty']}")
-                else:
-                    print(f"订单部分成交: {result['filled_qty']}/{result['filled_qty'] + result['remaining_qty']}")
-            else:
-                print(f"下单失败: {result['message']}")
+        执行下单：将订单发送到交易所并根据返回结果做后续处理。
+
+        行为说明：
+        - 调用 `Roostoo.place_order` 提交订单。
+        - 使用 `_parse_order_obj` 解析交易所返回的 OrderDetail/OrderMatched。解析失败会以错误形式返回。
+        - 如果订单完全成交（状态为 FILLED 或剩余量接近 0），直接调用 `Portfolio.register_order_execution` 更新账本并返回成功。
+        - 如果订单部分成交或为挂单（PENDING / MAKER），将订单加入 `pending_orders_queue`，返回 queued=True 以便后台轮询处理后续成交。
+
+        返回值为字典，包含 success、order_id、status、filled_qty、remaining_qty、queued（若加入待处理队列）及原始响应 raw。
+        错误时返回 success=False 并提供 error/message 字段。
         """
 
         # This interface strictly expects an order dict produced by create_order().
@@ -481,105 +389,25 @@ class ExecutionEngine:
 
     def get_pending_orders_snapshot(self) -> Dict[str, List[Dict[str, Any]]]:
         """
-        获取待处理订单快照（只读）
-        
-        返回当前所有待处理订单（部分成交或未成交的订单）
-        
-        返回值：
-            字典，格式为 {queue_key: [订单列表]}
-            其中 queue_key = f"{coin}:{strategy_id}"
-            
-            每个订单包含：
-                order_id: 订单 ID
-                side: BUY 或 SELL
-                original_quantity: 原始下单数量
-                filled_quantity: 已成交数量
-                remaining_quantity: 未成交数量
-                price: 下单价格
-                created_at: 创建时间戳
-        
-        使用示例：
-            pending = engine.get_pending_orders_snapshot()
-            for queue_key, orders in pending.items():
-                coin, strategy = queue_key.split(':')
-                for order in orders:
-                    print(f"订单 {order['order_id']}: "
-                          f"成交 {order['filled_quantity']}/{order['original_quantity']}")
+        返回当前待处理订单的快照（只读）。
+
+        结果格式：{ "{coin}:{strategy_id}": [order_meta, ...], ... }
+        每个 order_meta 包含 order_id、side、original_quantity、filled_quantity、remaining_quantity、price、created_at、raw 等字段。
         """
         with self._pq_lock:
             return {k: list(v) for k, v in self.pending_orders_queue.items()}
 
     def process_query_response(self, response: Dict[str, Any]) -> List[Dict[str, Any]]:
         """
-        处理订单查询响应（由后台轮询线程调用）
-        
-        此方法处理从交易所查询回来的订单状态，并根据成交情况更新内部状态。
-        
-        说明：
-        - 如果订单被完全成交，自动注册执行并从待处理队列移除
-        - 如果订单部分成交，更新待处理队列中的元数据
-        - 如果订单被取消，从待处理队列移除
-        
-        参数：
-            response: 交易所返回的查询响应，应包含 OrderMatched 或 OrderDetail 字段
-        
-        返回值：
-            列表，每个元素是一个订单的处理结果
-            
-            每个结果包含：
-                order_id: 订单 ID
-                status: 订单状态
-                processed: 是否成功处理
-                type: 处理类型 ('full_fill'/'partial_fill'/'canceled'/'no_change')
-                filled_qty: 当前已成交量
-                remaining_qty: 当前未成交量
-        
-        返回示例 - 完全成交：
-            [
-                {
-                    'order_id': '123456',
-                    'status': 'FILLED',
-                    'processed': True,
-                    'type': 'full_fill',
-                    'filled_qty': 1.0,
-                    'remaining_qty': 0.0
-                }
-            ]
-        
-        返回示例 - 部分成交：
-            [
-                {
-                    'order_id': '123457',
-                    'status': 'PENDING',
-                    'processed': True,
-                    'type': 'partial_fill',
-                    'filled_qty': 0.5,
-                    'remaining_qty': 0.5
-                }
-            ]
-        
-        使用示例（后台轮询循环）：
-            def poller_loop():
-                while True:
-                    try:
-                        # 查询所有待处理订单
-                        response = roostoo_client.query_order()
-                        
-                        # 处理响应
-                        results = engine.process_query_response(response)
-                        
-                        # 记录处理结果
-                        for result in results:
-                            if result['type'] == 'full_fill':
-                                logger.info(f"订单 {result['order_id']} 完全成交")
-                            elif result['type'] == 'partial_fill':
-                                logger.info(f"订单 {result['order_id']} 部分成交，"
-                                          f"剩余 {result['remaining_qty']}")
-                        
-                        time.sleep(3)  # 每 3 秒查询一次
-                    except Exception as e:
-                        logger.error(f"轮询错误: {e}")
-                        time.sleep(3)
+        处理交易所的订单查询响应（用于后台轮询结果的汇总处理）。
+
+        功能：对返回的 OrderMatched / OrderDetail 条目逐个解析，
+        - 若订单已完全成交：调用 `Portfolio.register_order_execution`，并从 pending 队列移除；返回 type='full_fill'.
+        - 若订单部分成交：更新 pending 队列中的已成交/剩余数量；返回 type='partial_fill'.
+        - 若订单被取消：从队列移除并返回 type='canceled'.
+        - 若该订单不在本地追踪集合中：返回 reason='order_not_tracked'.
+
+        返回值：处理结果列表，每项包含 order_id、status、processed、type、filled_qty、remaining_qty 等字段。
         """
         processed = []
         if not response or not isinstance(response, dict):
