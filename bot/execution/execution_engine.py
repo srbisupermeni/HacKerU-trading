@@ -1,6 +1,7 @@
 import logging
 import threading
 import time
+import uuid
 from typing import Optional, Dict, List, Any
 
 from bot.api.roostoo import Roostoo
@@ -119,9 +120,60 @@ class ExecutionEngine:
             'raw': obj,
         }
 
-    def execute_order(self, coin: str, side: str, quantity: float, price: Optional[float] = None,
-                      order_type: Optional[str] = None, strategy_id: str = None, stop_loss: float = None,
-                      take_profit: float = None) -> Dict:
+    def create_order(self, coin: str, side: str, quantity: float, price: Optional[float] = None,
+                      order_type: Optional[str] = None, strategy_id: str = None,
+                      client_order_id: Optional[str] = None) -> Dict[str, Any]:
+        """Create a standardized order dict for strategies to return to the main loop.
+
+        The strategy layer should call this method to construct an order object and
+        return it to the main loop. The main loop can then call
+        `engine.execute_order(order)` or `engine.execute_order(**order)` to actually
+        place the order.
+
+        Returned dict fields:
+            - client_order_id: local id for tracking (string)
+            - coin, side, quantity, price, order_type, strategy_id
+            - created_at: ms timestamp
+            - status: 'CREATED'
+
+        This method performs lightweight validation and normalization.
+        """
+
+        if not coin:
+            raise ValueError('coin is required')
+        if not side:
+            raise ValueError('side is required')
+        if quantity is None:
+            raise ValueError('quantity is required')
+
+        # normalize
+        side_norm = str(side).upper()
+        try:
+            qty = float(quantity)
+        except Exception:
+            raise ValueError('quantity must be numeric')
+
+        # decide default order_type similar to execute_order
+        if order_type is None:
+            order_type = 'LIMIT' if price is not None else 'MARKET'
+
+        cid = client_order_id or f"cli_{int(time.time()*1000)}_{uuid.uuid4().hex[:8]}"
+
+        order = {
+            'client_order_id': cid,
+            'coin': coin,
+            'side': side_norm,
+            'quantity': qty,
+            'price': float(price) if price is not None else None,
+            'order_type': order_type,
+            'strategy_id': strategy_id,
+            'created_at': int(time.time() * 1000),
+            'status': 'CREATED'
+        }
+
+        return order
+
+    def execute_order(self, order: Dict[str, Any]) -> Dict:
         """
         下单接口（策略层主要调用此方法）
         
@@ -131,7 +183,7 @@ class ExecutionEngine:
         3. 返回下单结果
         
         参数：
-            coin: 币种代码，例如 'BTC/USD', 'ETH/USD'
+            coin: 币种代码，例如 'BTC', 'ETH'
             side: 方向，'BUY' 或 'SELL'
             quantity: 数量
             price: 价格（可选）
@@ -140,8 +192,6 @@ class ExecutionEngine:
             order_type: 订单类型（可选），'MARKET' 或 'LIMIT'
                 - 不提供时自动判断（有价格 -> LIMIT，无价格 -> MARKET）
             strategy_id: 策略 ID（必须提供），用于订单归属追踪
-            stop_loss: 止损价格（可选）
-            take_profit: 止盈价格（可选）
         
         返回值：字典，包含：
             success (bool): 是否成功下单
@@ -201,6 +251,24 @@ class ExecutionEngine:
             else:
                 print(f"下单失败: {result['message']}")
         """
+
+        # This interface strictly expects an order dict produced by create_order().
+        if not isinstance(order, dict):
+            raise ValueError('execute_order expects an order dict produced by create_order()')
+
+        # Minimal guard to ensure order looks like it was created by create_order()
+        required_keys = ['client_order_id', 'coin', 'side', 'quantity']
+        missing = [k for k in required_keys if k not in order]
+        if missing:
+            raise ValueError(f'order dict missing required keys: {missing}')
+
+        # Extract fields
+        coin = order.get('coin')
+        side = order.get('side')
+        quantity = order.get('quantity')
+        price = order.get('price') if 'price' in order else None
+        order_type = order.get('order_type') if 'order_type' in order else None
+        strategy_id = order.get('strategy_id') if 'strategy_id' in order else None
 
         # 策略层已自行管理币种所有权；执行层不再做应用级币种锁控制
 

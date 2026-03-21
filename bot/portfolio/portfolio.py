@@ -177,6 +177,35 @@ class Portfolio:
             self.tradable_pairs = {}
             return False
 
+            # -------------------------
+            # Execution helpers (convenience passthroughs)
+            # -------------------------
+            def create_order(self, coin: str, side: str, quantity: float, price: Optional[float] = None,
+                             order_type: Optional[str] = None, strategy_id: str = None,
+                             client_order_id: Optional[str] = None) -> Dict[str, Any]:
+                """Convenience wrapper that delegates to ExecutionEngine.create_order.
+
+                Note: ExecutionEngine.create_order performs order validation and returns
+                a standardized order dict. Strategies or the main loop may call
+                portfolio.create_order(...) as an alternative to execution.create_order(...).
+                """
+                if not self.execution:
+                    raise RuntimeError('Execution module not set on Portfolio')
+                return self.execution.create_order(coin=coin, side=side, quantity=quantity,
+                                                  price=price, order_type=order_type,
+                                                  strategy_id=strategy_id, client_order_id=client_order_id)
+
+            def execute_order(self, order: Dict[str, Any]) -> Dict[str, Any]:
+                """Convenience wrapper that delegates to ExecutionEngine.execute_order.
+
+                IMPORTANT: The `order` argument must be a dict produced by
+                `ExecutionEngine.create_order(...)`. `ExecutionEngine.execute_order`
+                enforces this contract and will raise ValueError on invalid input.
+                """
+                if not self.execution:
+                    raise RuntimeError('Execution module not set on Portfolio')
+                return self.execution.execute_order(order)
+
     # ================= 持仓管理 =================
 
     def update_positions(self, new_positions: Dict[str, Dict[str, float]] = None):
