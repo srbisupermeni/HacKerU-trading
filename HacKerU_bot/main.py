@@ -41,17 +41,20 @@ def create_core_modules() -> tuple:
 
 
 def load_strategies(engine) -> List:
-    """Load placeholder strategies and attach engine.create_order to them."""
+    """Load placeholder strategies and pass the ExecutionEngine instance into each strategy.
+
+    Each strategy receives the engine via its constructor and should call
+    `self.engine.create_order(...)` when constructing orders.
+    """
     from HacKerU_bot.strategy.placeholder_strategy1 import PlaceholderStrategy1
     from HacKerU_bot.strategy.placeholder_strategy2 import PlaceholderStrategy2
 
-    strat1 = PlaceholderStrategy1()
-    strat2 = PlaceholderStrategy2()
+    # Provide the engine instance to each strategy so they can use self.engine
+    strat1 = PlaceholderStrategy1(engine=engine)
+    strat2 = PlaceholderStrategy2(engine=engine)
     strategies = [strat1, strat2]
 
-    for s in strategies:
-        setattr(s, 'create_order', engine.create_order)
-
+    # strategies now receive engine via constructor and should call self.engine.create_order(...)
     return strategies
 
 

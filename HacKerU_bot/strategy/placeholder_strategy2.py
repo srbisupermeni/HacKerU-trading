@@ -13,15 +13,6 @@ PlaceholderStrategy2
 """
 
 
-from bot.execution.execution_engine import ExecutionEngine
-
-
-# 为了简单，直接将类方法作为函数别名导出，调用时需传入 engine 实例作为第一个参数：
-# from bot.execution.execution_engine import ExecutionEngine
-# create_order = ExecutionEngine.create_order
-create_order = ExecutionEngine.create_order
-
-
 class PlaceholderStrategy2:
     """示例策略类：通过 ExecutionEngine.create_order 构建订单并返回。
 
@@ -56,8 +47,8 @@ class PlaceholderStrategy2:
         quantity = 0.01
         order_type = 'MARKET'
 
-        # 通过包装的 create_order 函数创建标准化订单字典（传入 engine 实例）
-        order = create_order(self.engine, coin=coin, side=side, quantity=quantity,
-                             price=None, order_type=order_type, strategy_id=self.name)
+        # 使用注入的 engine 实例创建订单字典
+        order = self.engine.create_order(coin=coin, side=side, quantity=quantity,
+                                         price=None, order_type=order_type, strategy_id=self.name)
 
         return order
