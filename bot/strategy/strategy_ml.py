@@ -43,8 +43,8 @@ BTC_TREND_SHIFT_BARS = 12
 MIN_ATR_PCT = 0.0015                
 
 COIN_GROUPS = {
-    "meme": ["PEPE", "DOGE", "WIF"],
-    "layer1": ["SOL", "APT", "SUI", "NEAR"],
+    "meme": ["PEPE", "WIF"],
+    "layer1": ["SOL", "APT", "SUI"],
     "ai": ["FET"],
     "btc": ["BTC"]
 }
@@ -53,15 +53,26 @@ GROUP_LIMITS = {
     "meme": 1,
     "layer1": 2,
     "ai": 1,
-    "btc": 0  # 🟢 改动 1：将 BTC 的允许持仓数量设为 0，彻底禁封
+    "btc": 0  # 彻底禁封 BTC
 }
 
-# 🟢 按板块设置更严格的 Edge Floor 门槛
+# 保留备用或兜底的板块 Edge Floor
 EDGE_FLOOR = {
-    "meme": 0.035,
-    "layer1": 0.018,
-    "ai": 0.020,
+    "meme": 0.032,
+    "layer1": 0.017,
+    "ai": 0.019,
     "btc": 0.015,
+}
+
+# 🟢 改动 3：按币定阈值，实施最高精度的 Edge 拦截
+EDGE_FLOOR_COIN = {
+    "PEPE": 0.034,
+    "WIF":  0.040,
+    "SOL":  0.017,
+    "SUI":  0.018,
+    "APT":  0.019,
+    "FET":  0.019,
+    "BTC":  0.015
 }
 
 def get_group(coin_name, groups=COIN_GROUPS):
@@ -140,10 +151,16 @@ class DualMLStrategy:
         self.strategy_id = strategy_id
         
         coin_group = get_group(coin)
-        if coin_group == "meme":
-            self.conf_thresh = 1.80   
+        
+        # 🟢 改动 2：针对 WIF 单独收紧，精细化配置 Score 门槛
+        if coin == "WIF":
+            self.conf_thresh = 1.75
+        elif coin == "PEPE":
+            self.conf_thresh = 1.50
+        elif coin_group == "meme":
+            self.conf_thresh = 1.55
         else:
-            self.conf_thresh = 1.20   
+            self.conf_thresh = 1.00   
             
         self.engineer = FeatureEngineer()
         self.lgb_model, self.xgb_model = None, None
@@ -219,17 +236,23 @@ class DualMLStrategy:
 
 
 # ============================================================
-# 主程序：包含冷静期和期望净收益排序的大师循环
+# 主程序：包含冷静期、漏斗统计与期望净收益排序的大师循环
 # ============================================================
 if __name__ == "__main__":
-    print("\n" + "=" * 80 + "\n🏆 终极硬核风控版：保留大盘感知，全面禁封 BTC 开仓\n" + "=" * 80)
+    print("\n" + "=" * 80 + "\n🏆 币种精细定标版：Meme 行情开关 + 独立阈值 + 漏斗诊断\n" + "=" * 80)
     roostoo_client = Roostoo()
     portfolio = Portfolio(None); portfolio.account_balance = INITIAL_CAPITAL
     execution = ExecutionEngine(portfolio, roostoo_client); portfolio.execution = execution
 
-    TARGET_COINS = [{"symbol": "BTCUSDT", "coin": "BTC"},{"symbol": "SOLUSDT", "coin": "SOL"},{"symbol": "DOGEUSDT", "coin": "DOGE"},
-                    {"symbol": "PEPEUSDT", "coin": "PEPE"},{"symbol": "WIFUSDT", "coin": "WIF"},{"symbol": "SUIUSDT", "coin": "SUI"},
-                    {"symbol": "APTUSDT", "coin": "APT"},{"symbol": "NEARUSDT", "coin": "NEAR"},{"symbol": "FETUSDT", "coin": "FET"}]
+    TARGET_COINS = [
+        {"symbol": "BTCUSDT", "coin": "BTC"},
+        {"symbol": "SOLUSDT", "coin": "SOL"},
+        {"symbol": "PEPEUSDT", "coin": "PEPE"},
+        {"symbol": "WIFUSDT", "coin": "WIF"},
+        {"symbol": "SUIUSDT", "coin": "SUI"},
+        {"symbol": "APTUSDT", "coin": "APT"},
+        {"symbol": "FETUSDT", "coin": "FET"}
+    ]
 
     strategies = {item["coin"]: DualMLStrategy(portfolio, execution, item["symbol"], item["coin"]) for item in TARGET_COINS}
 
@@ -237,7 +260,7 @@ if __name__ == "__main__":
     end_dt = datetime.today()
     start_dt = end_dt - timedelta(days=TOTAL_FETCH_DAYS)
     sim_data_raw = {}
-    with ThreadPoolExecutor(max_workers=9) as exc:
+    with ThreadPoolExecutor(max_workers=7) as exc:
         futures = {exc.submit(fetch_with_cache, s["symbol"], "5m", start_dt, end_dt): s["coin"] for s in TARGET_COINS}
         for f in futures:
             coin, df = futures[f], f.result()
@@ -252,6 +275,8 @@ if __name__ == "__main__":
     
     cooldowns = {c: 0 for c in strategies}             
     consecutive_losses = {c: 0 for c in strategies}    
+    
+    reject_stats = Counter()
     
     trades_count, win_count, last_train_time = 0, 0, None
     trade_pnls = []
@@ -287,7 +312,6 @@ if __name__ == "__main__":
             pos = positions[coin]
             coin_group = get_group(coin)
             
-            # 平仓逻辑
             if pos["qty"] > 0:
                 curr_row = df.iloc[i]
                 sl_p, tp_p = pos["entry_price"]*(1-pos["sl_pct"]), pos["entry_price"]*(1+pos["tp_pct"])
@@ -311,7 +335,6 @@ if __name__ == "__main__":
                     portfolio.account_balance += rev
                     trades_count += 1
                     
-                    # 差异化冷却机制 (Meme 单独加长 cooldown)
                     if pnl > 0: 
                         win_count += 1
                         consecutive_losses[coin] = 0
@@ -319,44 +342,67 @@ if __name__ == "__main__":
                     else:
                         consecutive_losses[coin] += 1
                         if consecutive_losses[coin] >= 2:
-                            # 连亏惩罚
                             cooldowns[coin] = i + (36 if coin_group == "meme" else 24) 
                             consecutive_losses[coin] = 0
                         else:
-                            # 普通亏损惩罚
                             cooldowns[coin] = i + (12 if coin_group == "meme" else 6)  
                     
                     print(f"[{curr_time}] 卖出 [{coin}] {reason} | 价: {smart_price(exit_price)} | 赚: ${pnl:.2f} | 余额: ${portfolio.account_balance:.2f}")
                     positions[coin] = {"qty":0.0, "entry_price":0.0, "entry_bar":0, "sl_pct":0.0, "tp_pct":0.0, "invested_cash":0.0, "entry_score":0.0}
             
             else:
-                if i < cooldowns.get(coin, 0): continue
+                if i < cooldowns.get(coin, 0):
+                    reject_stats[f"{coin}_cooldown"] += 1
+                    continue
                 
-                # 🟢 改动 2：硬性阻断 BTC，彻底屏蔽其参与开仓信号的生成
-                if coin == "BTC": continue 
-                    
-                atr_p = float(feat.get("atr_14", 0.0))
-                sma_p = (not pd.isna(feat.get("sma_20"))) and (df.iloc[i-1]["close"] > feat.get("sma_20"))
+                if coin == "BTC":
+                    reject_stats["btc_disabled"] += 1
+                    continue 
                 
-                if score > strat.conf_thresh and feat.get("rsi_14", 50) < 68 and sma_p and atr_p >= MIN_ATR_PCT:
-                    
-                    # 将 TP 缩近至 atr * 2.8，确保在 12 根 K 线内更容易触达兑现
-                    tp_pct = float(np.clip(atr_p * 2.8, 0.015, 0.040))
-                    sl_pct = float(np.clip(atr_p * 2.0, 0.012, 0.028))
-                    
-                    cost = 2 * FEE_RATE + 2 * SLIPPAGE
-                    risk_penalty = sl_pct / max(score, 0.1) 
-                    expected_edge = (score * tp_pct) - cost - risk_penalty
-                    
-                    # 根据不同板块，应用更严格的 Edge Floor 底线
-                    floor_threshold = EDGE_FLOOR.get(coin_group, 0.015)
-                    if expected_edge <= floor_threshold:
+                # 🟢 改动 1：Meme 专属行情过滤器 (Regime Gate)
+                if coin_group == "meme":
+                    if btc_sma_now <= btc_sma_prev:
+                        reject_stats[f"{coin}_btc_regime_block"] += 1
                         continue
-                        
-                    predictions.append({
-                        "coin": coin, "score": score, "price": df.iloc[i]["open"], "atr": atr_p,
-                        "tp_pct": tp_pct, "sl_pct": sl_pct, "expected_edge": expected_edge
-                    })
+                    if float(feat.get("volume_intensity", 0.0)) < 1.15:
+                        reject_stats[f"{coin}_low_volume_intensity"] += 1
+                        continue
+
+                if score <= strat.conf_thresh:
+                    reject_stats[f"{coin}_score_thresh"] += 1
+                    continue
+                    
+                if feat.get("rsi_14", 50) >= 68:
+                    reject_stats[f"{coin}_rsi_overbought"] += 1
+                    continue
+                
+                sma_p = (not pd.isna(feat.get("sma_20"))) and (df.iloc[i-1]["close"] > feat.get("sma_20"))
+                if not sma_p:
+                    reject_stats[f"{coin}_sma_downtrend"] += 1
+                    continue
+                
+                atr_p = float(feat.get("atr_14", 0.0))
+                if atr_p < MIN_ATR_PCT:
+                    reject_stats[f"{coin}_low_atr"] += 1
+                    continue
+                    
+                tp_pct = float(np.clip(atr_p * 2.8, 0.015, 0.040))
+                sl_pct = float(np.clip(atr_p * 2.0, 0.012, 0.028))
+                
+                cost = 2 * FEE_RATE + 2 * SLIPPAGE
+                risk_penalty = sl_pct / max(score, 0.1) 
+                expected_edge = (score * tp_pct) - cost - risk_penalty
+                
+                # 🟢 改动 3：按币定阈值，支持 Fallback 到板块阈值
+                floor_threshold = EDGE_FLOOR_COIN.get(coin, EDGE_FLOOR.get(coin_group, 0.015))
+                if expected_edge <= floor_threshold:
+                    reject_stats[f"{coin}_low_edge"] += 1
+                    continue
+                    
+                predictions.append({
+                    "coin": coin, "score": score, "price": df.iloc[i]["open"], "atr": atr_p,
+                    "tp_pct": tp_pct, "sl_pct": sl_pct, "expected_edge": expected_edge
+                })
 
         active_cnt = sum(1 for p in positions.values() if p["qty"] > 0)
         if active_cnt < MAX_POSITIONS and predictions:
@@ -384,6 +430,9 @@ if __name__ == "__main__":
                 target_notional = invest / (1 + FEE_RATE)
                 qty = float(smart_quantity(target_notional, entry_p))
                 actual_cost = qty * entry_p * (1 + FEE_RATE)
+                
+                if qty <= 0 or actual_cost < MIN_ORDER_USD or actual_cost > portfolio.account_balance:
+                    continue
                 
                 portfolio.account_balance -= actual_cost
                 remaining_budget -= (qty * entry_p)
@@ -414,11 +463,15 @@ if __name__ == "__main__":
     avg_pnl = float(np.mean(trade_pnls)) if trade_pnls else 0.0
     
     print(f"\n" + "="*70)
-    print(f"🏁 终极盲测战报 (Edge 精准过滤版)")
+    print(f"🏁 终极盲测战报 (精细币种风控 + Regime Gate)")
     print(f"初始本金: ${INITIAL_CAPITAL:.2f}")
     print(f"总交易次数: {trades_count} 次")
     print(f"胜率: {win_count/trades_count:.1%}" if trades_count else "胜率: 0.0%")
     print(f"单笔平均 PnL: ${avg_pnl:.2f}")
     print(f"最终净值: ${portfolio.account_balance:.2f}")
     print(f"💰 综合 ROI: {roi:.2f}% (最大资金使用率 50%)")
+    
+    print("\n📊 拒单原因分析漏斗 (Top 25):")
+    for reason, count in reject_stats.most_common(25):
+        print(f"  - {reason.ljust(25)}: {count} 次拦阻")
     print("="*70)
