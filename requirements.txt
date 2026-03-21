@@ -1,25 +1,53 @@
-# Data Processing & Computation
-pandas>=2.0.0
-numpy>=1.24.0
-python-binance>=1.0.35
+# =====================================================
+# CORE DEPENDENCIES - Essential for trading bot
+# =====================================================
+pandas==2.0.3
+numpy==1.24.4
+requests==2.31.0
+PyYAML==6.0
 
+# API clients
+python-binance==1.0.17
 
-#config
-PyYAML>=6.0.0
-python-dotenv>=1.0.0   # Added for .env management
-requests>=2.31.0       # Added for API communication
+# Config management
+python-dotenv==1.0.0
 
+# =====================================================
+# MACHINE LEARNING & FEATURE ENGINEERING
+# =====================================================
+scikit-learn==1.3.1
+xgboost==2.0.1
+lightgbm==4.0.0
 
-# Machine Learning & Evaluation
-scikit-learn>=1.2.0
-xgboost>=2.0.0 #version changed
-lightgbm>=3.3.0
+# =====================================================
+# OPTIONAL: Reinforcement Learning
+# Only needed if using PPO strategy (trainPPO.py)
+# =====================================================
+# Uncomment to enable PPO:
+# stable-baselines3==2.0.0
+# gymnasium==0.29.1
+# tensorboard==2.14.0
 
-# Data Visualization
-matplotlib>=3.7.0
-streamlit>=1.22.0
+# =====================================================
+# OPTIONAL: Data Visualization & Dashboards
+# Only needed if using Streamlit dashboard
+# Keep commented in production if not using dashboard
+# =====================================================
+# Uncomment to enable Streamlit:
+# streamlit==1.28.1
+# matplotlib==3.8.0
+# plotly==5.17.0
 
-#PPO
-stable-baselines3>=2.0.0
-gymnasium>=1.0.0
-tensorboard>=2.12.0
+# =====================================================
+# PRODUCTION ONLY: Monitoring & Deployment
+# =====================================================
+# Uncomment for AWS CloudWatch logging:
+# watchtower==3.0.1
+# boto3==1.28.85
+
+# =====================================================
+# PRODUCTION ONLY: Process Management
+# =====================================================
+# Uncomment for advanced process management:
+# supervisor==4.2.4
+
