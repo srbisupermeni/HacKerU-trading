@@ -3,7 +3,6 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any
 
 import pandas as pd
 
@@ -17,16 +16,19 @@ if str(ROOT) not in sys.path:
 from bot.portfolio.portfolio import Portfolio
 from bot.execution.execution_engine import ExecutionEngine
 
+
 class ObiDynamicStrategy:
     """
     OBI 动态标的版：基于 BTC 活跃度在 ETH 和 TAO 之间切换的动量突破策略
     """
-    def __init__(self, portfolio: Portfolio, execution: ExecutionEngine, strategy_id="obi_dynamic_01", alloc_ratio=0.50):
+
+    def __init__(self, portfolio: Portfolio, execution: ExecutionEngine, strategy_id="obi_dynamic_01",
+                 alloc_ratio=0.50):
         self.portfolio = portfolio
         self.execution = execution
-        self.strategy_id = strategy_id 
-        self.alloc_ratio = alloc_ratio 
-        
+        self.strategy_id = strategy_id
+        self.alloc_ratio = alloc_ratio
+
         self.logger = logging.getLogger("OBI_Dynamic")
         self.logger.setLevel(logging.INFO)
         if not self.logger.handlers:
@@ -36,25 +38,25 @@ class ObiDynamicStrategy:
 
         # 🏆 最新优化的参数字典
         self.HP_ETH = {
-            'obi_slow_threshold':     0.197798,
+            'obi_slow_threshold': 0.197798,
             'obi_momentum_threshold': 0.016294,
-            'vol_ratio_threshold':    1.7696,
-            'ema_period':             45,
-            'cooldown_bars':          6,
-            'atr_sl_multiplier':      2.696711,
-            'atr_tp_multiplier':      3.624748,
+            'vol_ratio_threshold': 1.7696,
+            'ema_period': 45,
+            'cooldown_bars': 6,
+            'atr_sl_multiplier': 2.696711,
+            'atr_tp_multiplier': 3.624748,
         }
 
         self.HP_TAO = {
-            'obi_slow_threshold':     0.0457,
+            'obi_slow_threshold': 0.0457,
             'obi_momentum_threshold': 0.0231,
-            'vol_ratio_threshold':    0.8988,
-            'ema_period':             12,
-            'cooldown_bars':          5,
-            'atr_sl_multiplier':      2.910283,
-            'atr_tp_multiplier':      3.494203,
+            'vol_ratio_threshold': 0.8988,
+            'ema_period': 12,
+            'cooldown_bars': 5,
+            'atr_sl_multiplier': 2.910283,
+            'atr_tp_multiplier': 3.494203,
         }
-        
+
         # 实盘状态管理变量
         self.pos_qty = 0.0
         self.pos_entry = 0.0
@@ -62,7 +64,7 @@ class ObiDynamicStrategy:
         self.pos_tp = 0.0
         self.last_trade_index = -9999
         self.current_index = 0
-        
+
         # 标的锁定状态
         self.focused_coin = None
         self.focused_hp = None
@@ -95,15 +97,15 @@ class ObiDynamicStrategy:
         close = df_btc['close']
         ema20 = close.ewm(span=20, adjust=False).mean().iloc[-1]
         vol_short = df_btc['volume'].rolling(12).mean().iloc[-1]
-        vol_long  = df_btc['volume'].rolling(100).mean().iloc[-1]
+        vol_long = df_btc['volume'].rolling(100).mean().iloc[-1]
         ret = (close.iloc[-1] / close.iloc[-20] - 1) * 100
         return sum([close.iloc[-1] > ema20, vol_short > vol_long * 0.85, ret > -5]) >= 2
 
-    def compute_obi_indicators(self, df: pd.DataFrame, hp: dict) -> dict[str | Any, float | bool | Any] | None:
+    def compute_obi_indicators(self, df: pd.DataFrame, hp: dict):
         """核心指标计算（Pandas 矢量化近似形态法）"""
         if len(df) < 60:
             return None
-            
+
         epsilon = 1e-8
         c = df['close']
         v = df['volume']
@@ -113,12 +115,12 @@ class ObiDynamicStrategy:
 
         net = ((c - o) / (h - l + epsilon)) * v
         obi_slow = net.rolling(20).mean() / (v.rolling(20).mean() + epsilon)
-        obi_fast = net.rolling(5).mean()  / (v.rolling(5).mean()  + epsilon)
-        obi_mom  = obi_fast - obi_slow
+        obi_fast = net.rolling(5).mean() / (v.rolling(5).mean() + epsilon)
+        obi_mom = obi_fast - obi_slow
         vol_ratio = v.rolling(5).mean() / (v.rolling(30).mean() + epsilon)
         ema = c.ewm(span=hp['ema_period'], adjust=False).mean()
 
-        tr = pd.concat([h-l, (h-c.shift()).abs(), (l-c.shift()).abs()], axis=1).max(axis=1)
+        tr = pd.concat([h - l, (h - c.shift()).abs(), (l - c.shift()).abs()], axis=1).max(axis=1)
         atr = tr.rolling(14).mean()
 
         latest = df.iloc[-1]
@@ -133,7 +135,7 @@ class ObiDynamicStrategy:
             'above_ema': latest['close'] > ema.iloc[-1],
             'ema_val': float(ema.iloc[-1]),
             'atr': float(atr.iloc[-1]),
-            'obi_slow_prev': float(obi_slow.iloc[-2]) if len(obi_slow)>1 else 0,
+            'obi_slow_prev': float(obi_slow.iloc[-2]) if len(obi_slow) > 1 else 0,
         }
 
     def on_tick(self, sim_data: dict, total_equity: float):
@@ -163,7 +165,7 @@ class ObiDynamicStrategy:
                 target_coin = "TAO"
                 hp = self.HP_TAO
                 # self.logger.info("📉 BTC inactive → 监控 TAO") # 避免刷屏可注释
-                
+
             self.focused_coin = target_coin
             self.focused_hp = hp
 
@@ -177,7 +179,7 @@ class ObiDynamicStrategy:
         ind = self.compute_obi_indicators(df_target, hp)
         if not ind or pd.isna(ind['atr']) or ind['atr'] <= 0:
             return
-            
+
         curr_price = ind['price']
 
         # ==========================================
@@ -187,22 +189,23 @@ class ObiDynamicStrategy:
             exit_triggered = False
             reason = ""
             exit_price = 0.0
-            
-            if ind['low'] <= self.pos_sl: 
+
+            if ind['low'] <= self.pos_sl:
                 exit_triggered, reason, exit_price = True, "🛑 触发 ATR 物理止损", self.pos_sl
-            elif ind['high'] >= self.pos_tp: 
+            elif ind['high'] >= self.pos_tp:
                 exit_triggered, reason, exit_price = True, "🎯 触发 ATR 物理止盈", self.pos_tp
-            elif (curr_price < ind['ema_val']) and (ind['obi_slow'] < 0): 
+            elif (curr_price < ind['ema_val']) and (ind['obi_slow'] < 0):
                 exit_triggered, reason, exit_price = True, "⚠️ 触发策略恶化平仓", curr_price
-                
+
             if exit_triggered:
-                order = self.portfolio.create_order(self.focused_coin, "SELL", self.pos_qty, order_type="MARKET", strategy_id=self.strategy_id)
+                order = self.portfolio.create_order(self.focused_coin, "SELL", self.pos_qty, order_type="MARKET",
+                                                    strategy_id=self.strategy_id)
                 # enforce >=60s between actual execute_order calls
                 res = self._call_with_rate_limit(self.portfolio.execute_order, order)
                 if res.get('success'):
                     pnl = self.pos_qty * (exit_price - self.pos_entry)
                     self.logger.info(f"✅ [{self.focused_coin} 已平仓] | {reason} | PnL ≈ ${pnl:+.2f}")
-                    
+
                     # 清空状态
                     self.pos_qty = 0.0
                     self.pos_entry = 0.0
@@ -216,33 +219,34 @@ class ObiDynamicStrategy:
         # ==========================================
         if self.pos_qty == 0:
             bars_since = self.current_index - self.last_trade_index
-            
+
             if (ind['obi_slow'] > hp['obi_slow_threshold'] and
-                ind['obi_momentum'] > hp['obi_momentum_threshold'] and
-                ind['vol_ratio'] > hp['vol_ratio_threshold'] and
-                ind['above_ema'] and 
-                bars_since >= hp['cooldown_bars']):
-                
+                    ind['obi_momentum'] > hp['obi_momentum_threshold'] and
+                    ind['vol_ratio'] > hp['vol_ratio_threshold'] and
+                    ind['above_ema'] and
+                    bars_since >= hp['cooldown_bars']):
+
                 min_distance = curr_price * 0.005
                 sl_dist = max(ind['atr'] * hp['atr_sl_multiplier'], min_distance)
                 tp_dist = max(ind['atr'] * hp['atr_tp_multiplier'], min_distance * 1.5)
-                
+
                 sl_price = round(curr_price - sl_dist, 4)
                 tp_price = round(curr_price + tp_dist, 4)
-                
+
                 # 资金分配：目标额度为全局净值的 alloc_ratio (默认 50%)，且不超过现金余额
                 target_invest_amount = total_equity * self.alloc_ratio
                 invest_amount = min(target_invest_amount, self.portfolio.account_balance)
-                
+
                 if invest_amount < 10.0:
                     self.logger.warning("❌ 余额不足或被限制，无法下单")
                     return
-                
+
                 # 略低一点买入 (模拟 limit 下单以促进成交)
                 buy_price = curr_price * 0.999
                 quantity = round(invest_amount / buy_price, 4)
-                
-                order = self.portfolio.create_order(self.focused_coin, "BUY", quantity, price=buy_price, order_type="LIMIT", strategy_id=self.strategy_id)
+
+                order = self.portfolio.create_order(self.focused_coin, "BUY", quantity, price=buy_price,
+                                                    order_type="LIMIT", strategy_id=self.strategy_id)
                 # enforce >=60s between actual execute_order calls
                 order_id = self._call_with_rate_limit(self.portfolio.execute_order, order)['order_id']
                 res = self._call_with_rate_limit(self.execution.client.query_order(pending_only=True))
