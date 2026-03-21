@@ -9,6 +9,31 @@ ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.append(str(ROOT))
 
+# Robust logging setup early: configure logging before importing modules that may use it.
+import logging as _logging
+log_handlers = []
+log_format = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+try:
+    logs_dir = ROOT / "bot" / "logs"
+    try:
+        logs_dir.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+    try:
+        fh = _logging.FileHandler(logs_dir / "main_bot.log")
+        log_handlers.append(fh)
+    except Exception:
+        pass
+finally:
+    log_handlers.append(_logging.StreamHandler())
+
+_logging.basicConfig(
+    level=_logging.INFO,
+    format=log_format,
+    handlers=log_handlers
+)
+
+
 from bot.api.roostoo import Roostoo
 from bot.portfolio.portfolio import Portfolio
 from bot.execution.execution_engine import ExecutionEngine
@@ -21,14 +46,6 @@ from database.Binance_fetcher import BinanceDataFetcher
 from bot.strategy.strategy_ml import DualMLLiveManager
 from bot.strategy.strategy_obi_eth import ObiDynamicStrategy
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler(ROOT / "bot" / "logs" / "main_bot.log"),
-        logging.StreamHandler()
-    ]
-)
 logger = logging.getLogger("MainControl")
 
 # ==========================================

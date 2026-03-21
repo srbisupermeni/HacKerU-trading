@@ -4,12 +4,20 @@ import time
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
+import logging
 
-import lightgbm as lgb
 import numpy as np
 import pandas as pd
-import xgboost as xgb
-from pandas import DataFrame
+try:
+    import lightgbm as lgb
+except Exception:
+    lgb = None
+    # delay heavy import error until training is attempted
+
+try:
+    import xgboost as xgb
+except Exception:
+    xgb = None
 
 # ============================================================
 # 路径与外部模块导入
@@ -286,185 +294,242 @@ class DualMLLiveManager:
         self.last_candle_time = None
         # persistent timestamp to enforce minimum time between actual order executions
         self.last_execution_time = None
+        # safe logger for the live manager
+        try:
+            self.logger = logging.getLogger("DualMLLiveManager")
+            self.logger.setLevel(logging.INFO)
+            if not self.logger.handlers:
+                ch = logging.StreamHandler()
+                ch.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+                self.logger.addHandler(ch)
+        except Exception:
+            # fallback to simple print-based logger
+            class _Dl:
+                def info(self, *a, **k):
+                    try: print(*a)
+                    except: pass
+                def warning(self, *a, **k):
+                    try: print('WARNING:', *a)
+                    except: pass
+                def exception(self, *a, **k):
+                    try: print('EXCEPTION:', *a)
+                    except: pass
+            self.logger = _Dl()
 
     def on_tick(self, sim_data: dict, current_time: datetime, total_equity: float):
         # use self.last_execution_time (persistent across ticks) to enforce throttling
         """主程序每获取到最新 K 线数据时调用此方法"""
-        base_df = sim_data.get("BTC")
-        if base_df is None or base_df.empty: return
+        # wrap the whole on_tick in a single try/except to prevent exceptions from bubbling up
+        try:
+            base_df = sim_data.get("BTC")
+            if base_df is None or base_df.empty:
+                return
 
-        latest_time = base_df.iloc[-1]["open_time"]
-        if self.last_candle_time != latest_time:
-            self.current_bar_index += 1
-            self.last_candle_time = latest_time
-        else:
-            return
+            latest_time = base_df.iloc[-1]["open_time"]
+            if self.last_candle_time != latest_time:
+                self.current_bar_index += 1
+                self.last_candle_time = latest_time
+            else:
+                return
 
             # 1. 模型重训触发机制
-        if self.last_train_time is None or (current_time - self.last_train_time).total_seconds() >= 86400:
-            print(f"🔄 [{current_time}] 触发机制：正在融合最新盘感重训模型...")
-            for coin in self.strategies:
-                # 🟢 修复4：消除前视偏差。排除当前未走完的最新一根K线(iloc[-1])，严格使用此前的 60 天数据
-                train_window_bars = TRAIN_DAYS * 288
-                df_train = sim_data[coin].iloc[-(train_window_bars + 1): -1]
-                self.strategies[coin].train_models_from_df(df_train)
-            self.last_train_time = current_time
-            print("✅ 模型矩阵升级完毕，恢复交易巡航。")
+            if self.last_train_time is None or (current_time - self.last_train_time).total_seconds() >= 86400:
+                try:
+                    self.logger.info(f"🔄 [{current_time}] 触发机制：正在融合最新盘感重训模型...")
+                    for coin in self.strategies:
+                        try:
+                            train_window_bars = TRAIN_DAYS * 288
+                            df_train = sim_data[coin].iloc[-(train_window_bars + 1): -1]
+                            self.strategies[coin].train_models_from_df(df_train)
+                        except Exception:
+                            self.logger.exception(f"Training failed for {coin}")
+                    self.last_train_time = current_time
+                    self.logger.info("✅ 模型矩阵升级完毕，恢复交易巡航。")
+                except Exception:
+                    self.logger.exception("Failed during training cycle")
 
-        btc_sma_now = base_df.iloc[-288:]["close"].mean()
-        btc_sma_prev = base_df.iloc[-300:-12]["close"].mean()
-        btc_multiplier = 1.0 if btc_sma_now > btc_sma_prev else 0.5
+            btc_sma_now = base_df.iloc[-288:]["close"].mean()
+            btc_sma_prev = base_df.iloc[-300:-12]["close"].mean()
+            btc_multiplier = 1.0 if btc_sma_now > btc_sma_prev else 0.5
 
-        predictions = []
+            predictions = []
 
-        for coin, strat in self.strategies.items():
-            df = sim_data.get(coin)
-            if df is None or df.empty or pd.isna(df.iloc[-1]["open"]): continue
+            for coin, strat in self.strategies.items():
+                try:
+                    df = sim_data.get(coin)
+                    if df is None or df.empty or pd.isna(df.iloc[-1]["open"]):
+                        continue
 
-            curr_row = df.iloc[-1]
-            score = strat.predict_signal(df.iloc[-300:].copy())
-            feat = strat.latest_features
-            pos = self.positions_state[coin]
-            coin_group = get_group(coin)
+                    curr_row = df.iloc[-1]
+                    score = strat.predict_signal(df.iloc[-300:].copy())
+                    feat = strat.latest_features
+                    pos = self.positions_state[coin]
+                    coin_group = get_group(coin)
+                except Exception:
+                    self.logger.exception(f"Error preparing data/prediction for {coin}")
+                    continue
 
-            # --- 平仓逻辑 ---
-            if pos["qty"] > 0:
-                sl_p = pos["entry_price"] * (1 - pos["sl_pct"])
-                tp_p = pos["entry_price"] * (1 + pos["tp_pct"])
-                exit_price, reason = None, ""
-                bars_held = self.current_bar_index - pos["entry_bar"]
+                # --- 平仓逻辑 ---
+                if pos["qty"] > 0:
+                    sl_p = pos["entry_price"] * (1 - pos["sl_pct"])
+                    tp_p = pos["entry_price"] * (1 + pos["tp_pct"])
+                    exit_price, reason = None, ""
+                    bars_held = self.current_bar_index - pos["entry_bar"]
 
-                # 🟢 修复1：补齐跳空(Gap)判定逻辑，严格对齐回测规则
-                if curr_row["open"] <= sl_p:
-                    exit_price, reason = curr_row["open"] * (1 - SLIPPAGE), "🛑 跳空止损"
-                elif curr_row["open"] >= tp_p:
-                    exit_price, reason = curr_row["open"] * (1 - SLIPPAGE), "🎯 跳空止盈"
-                elif curr_row["low"] <= sl_p:
-                    exit_price, reason = sl_p * (1 - SLIPPAGE), "🛑 常规止损"
-                elif curr_row["high"] >= tp_p:
-                    exit_price, reason = tp_p * (1 - SLIPPAGE), "🎯 常规止盈"
-                elif bars_held >= 6 and score < -0.5:
-                    exit_price, reason = curr_row["open"] * (1 - SLIPPAGE), "⚠️ AI动量衰竭强平"
-                elif bars_held >= 12:
-                    exit_price, reason = curr_row["open"] * (1 - SLIPPAGE), "⏰ 严格12根超时平仓"
+                    if curr_row["open"] <= sl_p:
+                        exit_price, reason = curr_row["open"] * (1 - SLIPPAGE), "🛑 跳空止损"
+                    elif curr_row["open"] >= tp_p:
+                        exit_price, reason = curr_row["open"] * (1 - SLIPPAGE), "🎯 跳空止盈"
+                    elif curr_row["low"] <= sl_p:
+                        exit_price, reason = sl_p * (1 - SLIPPAGE), "🛑 常规止损"
+                    elif curr_row["high"] >= tp_p:
+                        exit_price, reason = tp_p * (1 - SLIPPAGE), "🎯 常规止盈"
+                    elif bars_held >= 6 and score < -0.5:
+                        exit_price, reason = curr_row["open"] * (1 - SLIPPAGE), "⚠️ AI动量衰竭强平"
+                    elif bars_held >= 12:
+                        exit_price, reason = curr_row["open"] * (1 - SLIPPAGE), "⏰ 严格12根超时平仓"
 
-                if exit_price:
-                    order = self.portfolio.create_order(coin, "SELL", pos["qty"], order_type="MARKET",
-                                                        strategy_id=strat.strategy_id)
-                    # enforce >60s between actual execute_order calls
-                    if self.last_execution_time is None:
-                        res = self.portfolio.execute_order(order)
-                        self.last_execution_time = datetime.now()
-                    else:
-                        duration = (datetime.now() - self.last_execution_time).total_seconds()
-                        if duration >= 60:
-                            res = self.portfolio.execute_order(order)
-                            self.last_execution_time = datetime.now()
-                        else:
-                            time.sleep(max(0, int(60 - duration)))
-                            res = self.portfolio.execute_order(order)
-                            self.last_execution_time = datetime.now()
-
-                    if res.get("success"):
-                        # 🟢 修复3：严格按照扣除买卖双边手续费计算真实净盈亏(PnL)
-                        rev = pos["qty"] * exit_price * (1 - FEE_RATE)
-                        pnl = rev - pos["invested_cash"]
-
-                        if pnl > 0:
-                            self.consecutive_losses[coin] = 0
-                            self.cooldowns[coin] = self.current_bar_index + 6
-                        else:
-                            self.consecutive_losses[coin] += 1
-                            # 🟢 修复2：触发长冷静期后，将连亏计数器清零，防止永久被惩罚
-                            if self.consecutive_losses[coin] >= 2:
-                                self.cooldowns[coin] = self.current_bar_index + (36 if coin_group == "meme" else 24)
-                                self.consecutive_losses[coin] = 0  # <--- 清零修复
+                    if exit_price:
+                        try:
+                            order = self.portfolio.create_order(coin, "SELL", pos["qty"], order_type="MARKET",
+                                                                strategy_id=strat.strategy_id)
+                            if self.last_execution_time is None:
+                                res = self.portfolio.execute_order(order)
+                                self.last_execution_time = datetime.now()
                             else:
-                                self.cooldowns[coin] = self.current_bar_index + (12 if coin_group == "meme" else 6)
+                                duration = (datetime.now() - self.last_execution_time).total_seconds()
+                                if duration >= 60:
+                                    res = self.portfolio.execute_order(order)
+                                    self.last_execution_time = datetime.now()
+                                else:
+                                    time.sleep(max(0, int(60 - duration)))
+                                    res = self.portfolio.execute_order(order)
+                                    self.last_execution_time = datetime.now()
 
-                        self.positions_state[coin] = {"qty": 0.0, "entry_price": 0.0, "entry_bar": 0, "sl_pct": 0.0,
-                                                      "tp_pct": 0.0, "invested_cash": 0.0}
-                        print(f"[{current_time}] 卖出 [{coin}] {reason} | 净赚: ${pnl:.2f}")
+                            if res.get("success"):
+                                rev = pos["qty"] * exit_price * (1 - FEE_RATE)
+                                pnl = rev - pos["invested_cash"]
 
-            # --- 开仓漏斗 ---
-            else:
-                if self.current_bar_index < self.cooldowns.get(coin, 0): continue
-                if coin == "BTC": continue
+                                if pnl > 0:
+                                    self.consecutive_losses[coin] = 0
+                                    self.cooldowns[coin] = self.current_bar_index + 6
+                                else:
+                                    self.consecutive_losses[coin] += 1
+                                    if self.consecutive_losses[coin] >= 2:
+                                        self.cooldowns[coin] = self.current_bar_index + (36 if coin_group == "meme" else 24)
+                                        self.consecutive_losses[coin] = 0
+                                    else:
+                                        self.cooldowns[coin] = self.current_bar_index + (12 if coin_group == "meme" else 6)
 
-                if coin_group == "meme":
-                    if btc_sma_now <= btc_sma_prev: continue
-                    if float(feat.get("volume_intensity", 0.0)) < 1.15: continue
+                                self.positions_state[coin] = {"qty": 0.0, "entry_price": 0.0, "entry_bar": 0, "sl_pct": 0.0,
+                                                              "tp_pct": 0.0, "invested_cash": 0.0}
+                                try:
+                                    self.logger.info(f"[{current_time}] 卖出 [{coin}] {reason} | 净赚: ${pnl:.2f}")
+                                except Exception:
+                                    pass
+                        except Exception:
+                            self.logger.exception(f"Failed to execute exit order for {coin}")
 
-                if score <= strat.conf_thresh: continue
-                if feat.get("rsi_14", 50) >= 68: continue
-
-                sma_p = (not pd.isna(feat.get("sma_20"))) and (df.iloc[-2]["close"] > feat.get("sma_20"))
-                if not sma_p: continue
-
-                atr_p = float(feat.get("atr_14", 0.0))
-                if atr_p < MIN_ATR_PCT: continue
-
-                tp_pct = float(np.clip(atr_p * 2.8, 0.015, 0.040))
-                sl_pct = float(np.clip(atr_p * 2.0, 0.012, 0.028))
-                expected_edge = (score * tp_pct) - (2 * FEE_RATE + 2 * SLIPPAGE) - (sl_pct / max(score, 0.1))
-
-                floor_threshold = EDGE_FLOOR_COIN.get(coin, EDGE_FLOOR.get(coin_group, 0.015))
-                if expected_edge <= floor_threshold: continue
-
-                predictions.append({
-                    "coin": coin, "score": score, "price": curr_row["open"],
-                    "tp_pct": tp_pct, "sl_pct": sl_pct, "expected_edge": expected_edge
-                })
-
-        # 执行资金分配与买入
-        active_cnt = sum(1 for p in self.positions_state.values() if p["qty"] > 0)
-        if active_cnt < MAX_POSITIONS and predictions:
-            predictions.sort(key=lambda x: x["expected_edge"], reverse=True)
-            group_counts = Counter(get_group(c) for c, p in self.positions_state.items() if p["qty"] > 0)
-
-            target_exposure = total_equity * MAX_CAPITAL_USAGE
-            current_gross = sum(
-                p["qty"] * float(sim_data[c].iloc[-1]["open"]) for c, p in self.positions_state.items() if p["qty"] > 0)
-            remaining_budget = target_exposure - current_gross
-
-            for target in predictions:
-                if active_cnt >= MAX_POSITIONS or remaining_budget < MIN_ORDER_USD: break
-                coin, g = target["coin"], get_group(target["coin"])
-                if group_counts[g] >= GROUP_LIMITS.get(g, 1): continue
-
-                invest = min((remaining_budget / (MAX_POSITIONS - active_cnt)) * btc_multiplier, total_equity * 0.15)
-                invest = min(invest, self.portfolio.account_balance)
-
-                if invest < MIN_ORDER_USD: continue
-
-                entry_p = float(target["price"] * (1 + SLIPPAGE))
-                qty = float(smart_quantity(invest / (1 + FEE_RATE), entry_p))
-
-                order = self.portfolio.create_order(coin, "BUY", qty, order_type="MARKET",
-                                                    strategy_id=self.strategies[coin].strategy_id)
-                # enforce >60s between actual execute_order calls
-                if self.last_execution_time is None:
-                    res = self.portfolio.execute_order(order)
-                    self.last_execution_time = datetime.now()
+                # --- 开仓漏斗 ---
                 else:
-                    duration = (datetime.now() - self.last_execution_time).total_seconds()
-                    if duration >= 60:
-                        res = self.portfolio.execute_order(order)
-                        self.last_execution_time = datetime.now()
-                    else:
-                        time.sleep(max(0, int(60 - duration)))
-                        res = self.portfolio.execute_order(order)
-                        self.last_execution_time = datetime.now()
+                    if self.current_bar_index < self.cooldowns.get(coin, 0):
+                        continue
+                    if coin == "BTC":
+                        continue
 
-                if res.get("success"):
-                    # 🟢 修复3：记录真实的包含手续费的投入本金 (invested_cash)
-                    actual_cost = qty * entry_p * (1 + FEE_RATE)
-                    self.positions_state[coin] = {
-                        "qty": qty, "entry_price": entry_p, "entry_bar": self.current_bar_index,
-                        "sl_pct": target["sl_pct"], "tp_pct": target["tp_pct"],
-                        "invested_cash": actual_cost
-                    }
-                    group_counts[g] += 1
-                    active_cnt += 1
-                    remaining_budget -= actual_cost
-                    print(f"[{current_time}] 🟢 买入 [{coin}] | Edge: {target['expected_edge']:.4f}")
+                    if coin_group == "meme":
+                        if btc_sma_now <= btc_sma_prev:
+                            continue
+                        if float(feat.get("volume_intensity", 0.0)) < 1.15:
+                            continue
+
+                    if score <= strat.conf_thresh:
+                        continue
+                    if feat.get("rsi_14", 50) >= 68:
+                        continue
+
+                    sma_p = (not pd.isna(feat.get("sma_20"))) and (df.iloc[-2]["close"] > feat.get("sma_20"))
+                    if not sma_p:
+                        continue
+
+                    atr_p = float(feat.get("atr_14", 0.0))
+                    if atr_p < MIN_ATR_PCT:
+                        continue
+
+                    tp_pct = float(np.clip(atr_p * 2.8, 0.015, 0.040))
+                    sl_pct = float(np.clip(atr_p * 2.0, 0.012, 0.028))
+                    expected_edge = (score * tp_pct) - (2 * FEE_RATE + 2 * SLIPPAGE) - (sl_pct / max(score, 0.1))
+
+                    floor_threshold = EDGE_FLOOR_COIN.get(coin, EDGE_FLOOR.get(coin_group, 0.015))
+                    if expected_edge <= floor_threshold:
+                        continue
+
+                    predictions.append({
+                        "coin": coin, "score": score, "price": curr_row["open"],
+                        "tp_pct": tp_pct, "sl_pct": sl_pct, "expected_edge": expected_edge
+                    })
+
+            # 执行资金分配与买入
+            active_cnt = sum(1 for p in self.positions_state.values() if p["qty"] > 0)
+            if active_cnt < MAX_POSITIONS and predictions:
+                predictions.sort(key=lambda x: x["expected_edge"], reverse=True)
+                group_counts = Counter(get_group(c) for c, p in self.positions_state.items() if p["qty"] > 0)
+
+                target_exposure = total_equity * MAX_CAPITAL_USAGE
+                current_gross = sum(
+                    p["qty"] * float(sim_data[c].iloc[-1]["open"]) for c, p in self.positions_state.items() if p["qty"] > 0)
+                remaining_budget = target_exposure - current_gross
+
+                for target in predictions:
+                    if active_cnt >= MAX_POSITIONS or remaining_budget < MIN_ORDER_USD:
+                        break
+                    coin, g = target["coin"], get_group(target["coin"])
+                    if group_counts[g] >= GROUP_LIMITS.get(g, 1):
+                        continue
+
+                    invest = min((remaining_budget / (MAX_POSITIONS - active_cnt)) * btc_multiplier, total_equity * 0.15)
+                    invest = min(invest, self.portfolio.account_balance)
+
+                    if invest < MIN_ORDER_USD:
+                        continue
+
+                    entry_p = float(target["price"] * (1 + SLIPPAGE))
+                    qty = float(smart_quantity(invest / (1 + FEE_RATE), entry_p))
+
+                    try:
+                        order = self.portfolio.create_order(coin, "BUY", qty, order_type="MARKET",
+                                                            strategy_id=self.strategies[coin].strategy_id)
+                        if self.last_execution_time is None:
+                            res = self.portfolio.execute_order(order)
+                            self.last_execution_time = datetime.now()
+                        else:
+                            duration = (datetime.now() - self.last_execution_time).total_seconds()
+                            if duration >= 60:
+                                res = self.portfolio.execute_order(order)
+                                self.last_execution_time = datetime.now()
+                            else:
+                                time.sleep(max(0, int(60 - duration)))
+                                res = self.portfolio.execute_order(order)
+                                self.last_execution_time = datetime.now()
+
+                        if res.get("success"):
+                            actual_cost = qty * entry_p * (1 + FEE_RATE)
+                            self.positions_state[coin] = {
+                                "qty": qty, "entry_price": entry_p, "entry_bar": self.current_bar_index,
+                                "sl_pct": target["sl_pct"], "tp_pct": target["tp_pct"],
+                                "invested_cash": actual_cost
+                            }
+                            group_counts[g] += 1
+                            active_cnt += 1
+                            remaining_budget -= actual_cost
+                            try:
+                                self.logger.info(f"[{current_time}] 🟢 买入 [{coin}] | Edge: {target['expected_edge']:.4f}")
+                            except Exception:
+                                pass
+                    except Exception:
+                        self.logger.exception(f"Failed to execute buy order for {coin}")
+        except Exception:
+            try:
+                self.logger.exception("Unhandled exception in DualMLLiveManager.on_tick")
+            except Exception:
+                pass

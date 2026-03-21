@@ -28,15 +28,40 @@ fetcher.show_data(recent_df)
 =============================================================================
 """
 
-import requests
 import numpy as np
 import pandas as pd
 import os
-import zipfile
-import io
 import logging
-from datetime import date, timedelta
+from datetime import datetime
 from binance.client import Client 
+
+
+# Helper to obtain a logger but avoid raising OSError if the logging system's handlers
+# are misconfigured or the filesystem is not writable. Falls back to a simple printer.
+def _get_safe_logger(name):
+    try:
+        return logging.getLogger(name)
+    except OSError:
+        class _DummyLogger:
+            def info(self, msg, *args, **kwargs):
+                try:
+                    print(str(msg))
+                except Exception:
+                    pass
+
+            def warning(self, msg, *args, **kwargs):
+                try:
+                    print("WARNING:", str(msg))
+                except Exception:
+                    pass
+
+            def exception(self, msg, *args, **kwargs):
+                try:
+                    print("EXCEPTION:", str(msg))
+                except Exception:
+                    pass
+
+        return _DummyLogger()
 
 class BinanceDataFetcher:
     def __init__(self):
@@ -60,7 +85,7 @@ class BinanceDataFetcher:
         self.client = Client()
 
     def show_data(self, df, num_rows=5):
-        logger = logging.getLogger(__name__)
+        logger = _get_safe_logger(__name__)
         if df is not None and not df.empty:
             logger.info(f"{num_rows} of head:\n{df.head(num_rows)}")
             logger.info(f"{num_rows} of tail:\n{df.tail(num_rows)}")
@@ -100,7 +125,7 @@ class BinanceDataFetcher:
         获取当前时刻往前推的最新 K 线数据 (包含 buy_volume 和 sell_volume)
         :param limit: 获取的数据条数（最高 2000 条）
         """
-        logger = logging.getLogger(__name__)
+        logger = _get_safe_logger(__name__)
         logger.info(f"Fetching recent {limit} candles for {symbol} ({interval}) via SDK...")
 
         try:
