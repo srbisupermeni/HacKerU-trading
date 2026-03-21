@@ -1,0 +1,104 @@
+version: '3.9'
+
+services:
+  # Main trading bot - runs 24/7 with zero Streamlit overhead
+  trading-bot:
+    container_name: hackeru-trading-bot
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      ROOSTOO_API_KEY: ${ROOSTOO_API_KEY}
+      ROOSTOO_SECRET_KEY: ${ROOSTOO_SECRET_KEY}
+      TZ: Asia/Shanghai
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      # Mount logs for external monitoring
+      - ./bot/logs:/app/bot/logs
+      # Mount portfolio snapshots for Streamlit to read
+      - ./bot/portfolio:/app/bot/portfolio
+    healthcheck:
+      test: ["CMD", "ps", "aux"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 300s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "10"
+    networks:
+      - hackeru-network
+
+  # Optional: Streamlit dashboard (only if you want web UI)
+  # To enable: uncomment this section
+  # This reads JSON snapshots from trading-bot and displays them
+  streamlit-dashboard:
+    container_name: hackeru-streamlit
+    build:
+      context: .
+      dockerfile: Dockerfile.streamlit
+    restart: unless-stopped
+    depends_on:
+      trading-bot:
+        condition: service_healthy
+    volumes:
+      # Read portfolio snapshots from trading bot
+      - ./bot/portfolio/portfolio_state.json:/app/bot/portfolio/portfolio_state.json:ro
+    ports:
+      # Internal port 8501 exposed to host
+      # Access at http://localhost:8501
+      - "8501:8501"
+    environment:
+      STREAMLIT_SERVER_PORT: 8501
+      STREAMLIT_SERVER_ADDRESS: 0.0.0.0
+      STREAMLIT_SERVER_HEADLESS: "true"
+      STREAMLIT_LOGGER_LEVEL: "info"
+    networks:
+      - hackeru-network
+    # Only start Streamlit if you uncomment all lines above
+    # Uncomment the next line to enable:
+    # profiles: ["dashboard"]
+
+  # Optional: Nginx reverse proxy for public HTTPS access
+  # To enable: uncomment this section and configure SSL certificates
+  # nginx-proxy:
+  #   image: nginx:latest
+  #   container_name: hackeru-nginx
+  #   restart: unless-stopped
+  #   depends_on:
+  #     - streamlit-dashboard
+  #   ports:
+  #     - "80:80"
+  #     - "443:443"
+  #   volumes:
+  #     - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+  #     - ./certs/your-cert.crt:/etc/ssl/certs/cert.crt:ro
+  #     - ./certs/your-key.key:/etc/ssl/private/key.key:ro
+  #   networks:
+  #     - hackeru-network
+
+networks:
+  hackeru-network:
+    driver: bridge
+
+# Usage:
+# 1. Deploy main bot only:
+#    docker-compose up trading-bot -d
+#
+# 2. Deploy with optional Streamlit dashboard:
+#    Uncomment streamlit-dashboard section above, then:
+#    docker-compose up -d
+#
+# 3. Stop all services:
+#    docker-compose down
+#
+# 4. View logs:
+#    docker-compose logs -f trading-bot
+#    docker-compose logs -f streamlit-dashboard
+#
+# 5. Monitor resource usage:
+#    docker stats
+
