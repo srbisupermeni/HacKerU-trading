@@ -4,8 +4,8 @@ import time
 import uuid
 from typing import Optional, Dict, List, Any
 
-from bot.api.roostoo import Roostoo
-from bot.portfolio.portfolio import Portfolio
+from HacKerU_bot.api.roostoo import Roostoo
+from HacKerU_bot.portfolio.portfolio import Portfolio
 
 
 class ExecutionEngine:
@@ -103,8 +103,8 @@ class ExecutionEngine:
         }
 
     def create_order(self, coin: str, side: str, quantity: float, price: Optional[float] = None,
-                      order_type: Optional[str] = None, strategy_id: str = None,
-                      client_order_id: Optional[str] = None) -> Dict[str, Any]:
+                     order_type: Optional[str] = None, strategy_id: str = None,
+                     client_order_id: Optional[str] = None) -> Dict[str, Any]:
         """
         创建一个标准化的本地订单对象（便于策略层构造并传入 execute_order）。
 
@@ -130,7 +130,7 @@ class ExecutionEngine:
         if order_type is None:
             order_type = 'LIMIT' if price is not None else 'MARKET'
 
-        cid = client_order_id or f"cli_{int(time.time()*1000)}_{uuid.uuid4().hex[:8]}"
+        cid = client_order_id or f"cli_{int(time.time() * 1000)}_{uuid.uuid4().hex[:8]}"
 
         order = {
             'client_order_id': cid,
@@ -207,7 +207,8 @@ class ExecutionEngine:
                         parsed = self._parse_order_obj(om[0])
 
             if parsed is None:
-                return {'success': False, 'error': 'non_conforming_response', 'message': 'Response missing canonical OrderDetail or OrderMatched objects', 'raw': result}
+                return {'success': False, 'error': 'non_conforming_response',
+                        'message': 'Response missing canonical OrderDetail or OrderMatched objects', 'raw': result}
         except self.NonConformingRoostooResponse as e:
             return {'success': False, 'error': 'non_conforming_response', 'message': str(e), 'raw': result}
 
@@ -248,9 +249,12 @@ class ExecutionEngine:
             if st == 'FILLED' or remaining_qty <= 0.001:  # 允许 0.001 的浮点误差
                 self.portfolio.register_order_execution(coin, strategy_id, side, filled_qty or quantity,
                                                         exec_price,
-                                                        fee_amount=(commission_value if 'commission_value' in locals() else 0.0),
-                                                        fee_currency=(commission_coin if 'commission_coin' in locals() else None),
-                                                        fee_percent=(commission_percent if 'commission_percent' in locals() else None))
+                                                        fee_amount=(
+                                                            commission_value if 'commission_value' in locals() else 0.0),
+                                                        fee_currency=(
+                                                            commission_coin if 'commission_coin' in locals() else None),
+                                                        fee_percent=(
+                                                            commission_percent if 'commission_percent' in locals() else None))
 
                 # If this order was previously indexed as pending (defensive), remove it
                 if order_id_str:
@@ -359,7 +363,7 @@ class ExecutionEngine:
             key = self._orderid_index.get(order_id)
             if not key:
                 return False
-            
+
             lst = self.pending_orders_queue.get(key, [])
             for order_meta in lst:
                 if str(order_meta.get('order_id')) == order_id:
@@ -367,7 +371,7 @@ class ExecutionEngine:
                     order_meta.update(updates)
                     self.logger.info(f"Updated pending order {order_id}: {updates}")
                     return True
-        
+
         return False
 
     def _get_pending_order_meta(self, order_id: str) -> Optional[Dict[str, Any]]:
@@ -427,7 +431,8 @@ class ExecutionEngine:
                 # Skip non-conforming entries but record a processed entry indicating non-conformance
                 oid = e.get('OrderID') or e.get('order_id')
                 oid_s = str(oid) if oid is not None else 'unknown'
-                processed.append({'order_id': oid_s, 'status': None, 'processed': False, 'reason': 'non_conforming_entry'})
+                processed.append(
+                    {'order_id': oid_s, 'status': None, 'processed': False, 'reason': 'non_conforming_entry'})
                 continue
 
             oid_s = str(parsed.get('order_id'))
@@ -551,20 +556,3 @@ class ExecutionEngine:
                 })
 
         return processed
-
-
-# Convenience module-level wrapper so callers can `from bot.execution.execution_engine import create_order`.
-# This simply delegates to ExecutionEngine.create_order and keeps the same signature.
-def create_order(engine: ExecutionEngine, coin: str, side: str, quantity: float, price: Optional[float] = None,
-                 order_type: Optional[str] = None, strategy_id: str = None,
-                 client_order_id: Optional[str] = None) -> Dict[str, Any]:
-    """Module-level helper that delegates to ExecutionEngine.create_order.
-
-    Usage:
-        from bot.execution.execution_engine import create_order
-        order = create_order(engine, 'BTC', 'BUY', 0.01)
-    """
-    return ExecutionEngine.create_order(engine, coin, side, quantity, price=price,
-                                        order_type=order_type, strategy_id=strategy_id,
-                                        client_order_id=client_order_id)
-
