@@ -1,5 +1,6 @@
 import logging
 import time
+import math
 from typing import Dict, Any, Optional
 
 # Attempt to import Roostoo client for on-demand ticker fetching
@@ -63,6 +64,9 @@ class Portfolio:
         # ===== PnL 追踪（新增）=====
         # {coin: {'unrealized_pnl': float, 'realized_pnl': float, ...}}
         self.pnl_tracking: Dict[str, Dict] = {}
+
+        # Streamlit monitor integration
+        self._streamlit_state_file: Optional[str] = None
 
     def initialize_from_exchange_info(self, roostoo_client=None, exchange_info: Dict[str, Any] = None,
                                       account_currency: str = 'USD', fallback_balance: float = 0.0,
@@ -607,9 +611,19 @@ class Portfolio:
 
         if updated:
             self.logger.info(f"自动更新市场价格: {updated}")
+            # 在每次成功更新市场价格后运行风控检查
+            try:
+                self.risk_management(roostoo_client)
+            except Exception as e:
+                self.logger.warning(f"运行 risk_management 时发生错误: {e}")
             return True
         else:
             self.logger.info("未找到可更新的币种行情。")
+            # 仍然尝试运行风控（以防需要在无新价格更新时触发）
+            try:
+                self.risk_management(roostoo_client)
+            except Exception as e:
+                self.logger.warning(f"运行 risk_management 时发生错误: {e}")
             return False
 
     def set_market_prices(self, prices: Dict[str, float]) -> bool:
@@ -753,3 +767,110 @@ class Portfolio:
             'avg_entry_price': (cb.get('total_cost', 0.0) / cb.get('total_quantity', 1.0))
             if cb.get('total_quantity', 0.0) > 0 else 0.0
         }
+
+    def risk_management(self, roostoo_client=None, loss_threshold_pct: float = 2.0):
+        """
+        风控方法：检查所有持仓的未实现损益百分比（unrealized_pnl_pct），
+        如果某个币种的未实现损失超过 loss_threshold_pct（默认 2%），
+        则立即以市价全部卖出该币种的当前持仓数量并睡眠 60 秒以避免连续快速下单。
+
+        参数：
+            roostoo_client: 可选的 Roostoo 客户端实例；如果未提供则尝试从 self.execution.client 或按需实例化
+            loss_threshold_pct: 触发卖出的亏损阈值（百分比，例如 2.0 表示 2%）
+
+        返回：
+            成功执行的操作列表（每一项为 dict，包含 coin, qty, result）
+        """
+        # 获取可用的 Roostoo 客户端
+        if roostoo_client is None and getattr(self, 'execution', None) is not None:
+            roostoo_client = getattr(self.execution, 'client', None)
+
+        if roostoo_client is None and Roostoo is not None:
+            try:
+                roostoo_client = Roostoo()
+            except Exception as e:
+                self.logger.warning(f"无法实例化 Roostoo 客户端用于风控: {e}")
+
+        results = []
+
+        # 按成本记录的币种为主（也兼容 positions 中存在但 cost_basis 未记录的情况）
+        coins = set(self.cost_basis.keys()) | set(self.positions.keys())
+        for coin in coins:
+            try:
+                pos_info = self.get_position(coin)
+                unreal_pct = pos_info.get('unrealized_pnl_pct', 0.0)
+                total_qty = pos_info.get('total', 0.0)
+
+                # 仅对有持仓且为负收益的币种生效
+                if total_qty <= 0:
+                    continue
+
+                if unreal_pct < -abs(loss_threshold_pct):
+                    # 计算市价全部卖出的数量：向下取整到可用精度（这里使用 floor 保守处理）
+                    qty_to_sell = math.floor(total_qty * 1e8) / 1e8  # 保留至 1e-8 精度，避免微量残余
+                    if qty_to_sell <= 0:
+                        self.logger.info(f"{coin} 的可卖数量为零，跳过卖出。")
+                        continue
+
+                    if roostoo_client is None:
+                        self.logger.warning(f"没有可用的 Roostoo 客户端，无法对 {coin} 执行风控卖出。")
+                        continue
+
+                    self.logger.warning(f"风控触发：{coin} 未实现损失 {unreal_pct:.2f}% < -{loss_threshold_pct}%，尝试市价全部卖出 {qty_to_sell}")
+                    try:
+                        # place_order expects pair or coin; method handles adding /USD when needed
+                        result = roostoo_client.place_order(coin, 'SELL', qty_to_sell, order_type='MARKET')
+                        results.append({'coin': coin, 'qty': qty_to_sell, 'result': result})
+                        # 睡眠 60 秒以避免快速连续下单
+                        time.sleep(60)
+                    except Exception as e:
+                        self.logger.error(f"对 {coin} 下市价卖单失败: {e}")
+                        results.append({'coin': coin, 'qty': qty_to_sell, 'result': None, 'error': str(e)})
+
+            except Exception as e:
+                self.logger.warning(f"在风控处理中处理 {coin} 时发生错误: {e}")
+
+        return results
+
+    # ---------------- Streamlit monitor helpers ----------------
+    def attach_streamlit(self, file_path: Optional[str] = None) -> bool:
+        """Attach a streamlit monitor by specifying a file path where snapshots will be written.
+
+        If file_path is None, defaults to bot/portfolio/portfolio_state.json
+        Returns True if attached successfully (no strong guarantees the file is writable until publish_state).
+        """
+        if file_path is None:
+            import os
+            file_path = os.path.join(os.path.dirname(__file__), 'portfolio_state.json')
+
+        self._streamlit_state_file = file_path
+        self.logger.info(f"Streamlit monitor attached (file={file_path})")
+        return True
+
+    def detach_streamlit(self) -> None:
+        """Detach the streamlit monitor (stop publishing snapshots)."""
+        self._streamlit_state_file = None
+        self.logger.info("Streamlit monitor detached")
+
+    def publish_state(self, file_path: Optional[str] = None) -> Optional[str]:
+        """Write current portfolio snapshot to disk for the Streamlit monitor to read.
+
+        If file_path is None and a streamlit file is attached via attach_streamlit(), that path is used.
+        Returns the path written or None on failure.
+        """
+        # Lazy import to avoid hard dependency
+        try:
+            from bot.portfolio.portfolio_streamlit import save_portfolio_state
+        except Exception:
+            self.logger.warning('streamlit monitor module not available; cannot publish state')
+            return None
+
+        path_to_use = file_path or self._streamlit_state_file
+        try:
+            written = save_portfolio_state(self, file_path=path_to_use)
+            self.logger.info(f'Published portfolio state to {written}')
+            return written
+        except Exception as e:
+            self.logger.warning(f'Failed to publish portfolio state: {e}')
+            return None
+

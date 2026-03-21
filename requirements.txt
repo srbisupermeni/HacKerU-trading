@@ -17,6 +17,7 @@ lightgbm>=3.3.0
 
 # Data Visualization
 matplotlib>=3.7.0
+streamlit>=1.22.0
 
 #PPO
 stable-baselines3>=2.0.0

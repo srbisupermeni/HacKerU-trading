@@ -39,6 +39,12 @@ portfolio = Portfolio(execution_module=None)
 execution = ExecutionEngine(portfolio, roostoo_client)
 portfolio.execution = execution
 portfolio.initialize_from_exchange_info(roostoo_client)
+# Attach a Streamlit monitor (writes snapshots to bot/portfolio/portfolio_state.json by default).
+try:
+    portfolio.attach_streamlit()
+    logger.info("Streamlit portfolio monitor attached")
+except Exception:
+    logger.exception("Failed to attach Streamlit portfolio monitor")
 
 ml_manager = DualMLLiveManager(portfolio, execution)
 obi_strategy = ObiDynamicStrategy(portfolio, execution)
@@ -218,6 +224,11 @@ def main():
             try:
                 portfolio.update_positions()
                 portfolio.update_market_prices()
+                # publish a snapshot file for the Streamlit dashboard (if attached)
+                try:
+                    portfolio.publish_state()
+                except Exception:
+                    logging.getLogger(__name__).exception("failed to publish portfolio state")
             except Exception:
                 logging.getLogger(__name__).exception("failed to update market prices")
 
