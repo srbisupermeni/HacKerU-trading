@@ -768,7 +768,7 @@ class Portfolio:
             if cb.get('total_quantity', 0.0) > 0 else 0.0
         }
 
-    def risk_management(self, roostoo_client=None, loss_threshold_pct: float = 2.0):
+    def risk_management(self, roostoo_client=None, loss_threshold_pct: float = 1.0):
         """
         风控方法：检查所有持仓的未实现损益百分比（unrealized_pnl_pct），
         如果某个币种的未实现损失超过 loss_threshold_pct（默认 2%），
