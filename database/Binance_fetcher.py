@@ -1,48 +1,32 @@
 """
 =============================================================================
 Binance 数据获取工具 (Binance_fetcher.py)
-从 Binance 获取历史K线(OHLCV)数据，并自动保存为CSV文件，用于量化策略回测。
-
-【依赖库安装】
-请确保安装了 pandas  requests python-binance：
-
-
-【辅助方法】show_data()
-提供一个简单的工具方法，用于在控制台展示 DataFrame 的前几行和后几行数据，方便调试和验证数据是否正确获取。
-"""
-
-
-"""
-=============================================================================
-Binance 综合数据获取工具 (Data_fetcher.py)
-结合了 Binance Vision (历史批量数据) 和 python-binance SDK (实时最新数据)。
+结合 python-binance SDK 与 REST 直连获取最新 K 线数据。
 适用于量化策略回测与实盘信号生成。
 
-【功能模块】
-获取最新/实时的热数据 (通过 Python SDK)
-from Binance_fetcher import BinanceDataFetcher
-fetcher = BinanceDataFetcher()
-recent_df = fetcher.fetch_recent_klines(symbol="BTCUSDT", interval="1m", limit=10)  #获取最新的10条1分钟K线数据
-fetcher.show_data(recent_df)
-
+修复说明：
+1. 不在 __init__ 中直接初始化 Client，避免 AWS 上启动时因默认 ping 导致崩溃
+2. SDK 初始化改为懒加载，关闭默认 ping，并设置 timeout
+3. SDK 请求失败时，自动回退到 REST 直连
+4. 日志输出做防护，避免 handler 的 I/O 异常反过来导致程序中断
 =============================================================================
 """
 
 import logging
 import os
+from typing import Optional
 
 import numpy as np
 import pandas as pd
+import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+
 from binance.client import Client
 
 
-# Helper to obtain a logger but avoid raising OSError if the logging system's handlers
-# are misconfigured or the filesystem is not writable. Falls back to a simple printer.
 def _get_safe_logger(name):
-    # Return a small wrapper that delegates to the real logger but protects
-    # against I/O errors raised by handlers (for example when a FileHandler's
-    # underlying filesystem is unavailable). Any exception during logging will
-    # be caught and the message will be printed to stdout as a fallback.
+    """Return a logger wrapper that never raises due to logging handler errors."""
     lg = logging.getLogger(name)
 
     class _SafeLogger:
@@ -69,18 +53,50 @@ def _get_safe_logger(name):
 
         def exception(self, msg, *args, **kwargs):
             try:
-                # Prefer the real logger's exception formatting (which logs stack)
                 self._underlying.exception(msg, *args, **kwargs)
             except Exception:
                 try:
-                    if args:
-                        print("EXCEPTION:", str(msg), args)
-                    else:
-                        print("EXCEPTION:", str(msg))
+                    print("EXCEPTION:", str(msg))
                 except Exception:
                     pass
 
     return _SafeLogger(lg)
+
+
+def _wrap_provided_logger(logger):
+    class _ProvidedSafeLogger:
+        def __init__(self, underlying):
+            self._underlying = underlying
+
+        def info(self, msg, *args, **kwargs):
+            try:
+                self._underlying.info(msg, *args, **kwargs)
+            except Exception:
+                try:
+                    print(str(msg))
+                except Exception:
+                    pass
+
+        def warning(self, msg, *args, **kwargs):
+            try:
+                self._underlying.warning(msg, *args, **kwargs)
+            except Exception:
+                try:
+                    print("WARNING:", str(msg))
+                except Exception:
+                    pass
+
+        def exception(self, msg, *args, **kwargs):
+            try:
+                self._underlying.exception(msg, *args, **kwargs)
+            except Exception:
+                try:
+                    print("EXCEPTION:", str(msg))
+                except Exception:
+                    pass
+
+    return _ProvidedSafeLogger(logger)
+
 
 class BinanceDataFetcher:
     def __init__(self, logger=None):
@@ -99,53 +115,59 @@ class BinanceDataFetcher:
 
         self.raw_save_folder = os.path.join(root_dir, "database", "raw_data")
         self.processed_save_folder = os.path.join(root_dir, "database", "processed_data")
-        
-        # 初始化 Binance SDK Client (获取公开市场数据不需要 API Key)
-        self.client = Client()
 
-        # configure logger: prefer provided logger (wrapped), otherwise use safe internal logger
         if logger is None:
             self.logger = _get_safe_logger(__name__)
         else:
-            # wrap the provided logger so that I/O errors in handlers don't crash us
-            class _ProvidedSafeLogger:
-                def __init__(self, underlying):
-                    self._underlying = underlying
-
-                def info(self, msg, *args, **kwargs):
-                    try:
-                        self._underlying.info(msg, *args, **kwargs)
-                    except Exception:
-                        try:
-                            print(str(msg))
-                        except Exception:
-                            pass
-
-                def warning(self, msg, *args, **kwargs):
-                    try:
-                        self._underlying.warning(msg, *args, **kwargs)
-                    except Exception:
-                        try:
-                            print("WARNING:", str(msg))
-                        except Exception:
-                            pass
-
-                def exception(self, msg, *args, **kwargs):
-                    try:
-                        self._underlying.exception(msg, *args, **kwargs)
-                    except Exception:
-                        try:
-                            if args:
-                                print("EXCEPTION:", str(msg), args)
-                            else:
-                                print("EXCEPTION:", str(msg))
-                        except Exception:
-                            pass
-
             try:
-                self.logger = _ProvidedSafeLogger(logger)
+                self.logger = _wrap_provided_logger(logger)
             except Exception:
                 self.logger = _get_safe_logger(__name__)
+
+        # 不在 __init__ 中直接联网初始化，避免 AWS 上启动即失败
+        self.client: Optional[Client] = None
+
+        # REST 备用通道：即使 SDK 初始化失败，也能直接拉公开市场数据
+        self.base_url = "https://api.binance.com"
+        self.session = requests.Session()
+        retry = Retry(
+            total=3,
+            connect=3,
+            read=3,
+            backoff_factor=1,
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=frozenset(["GET"]),
+        )
+        adapter = HTTPAdapter(max_retries=retry)
+        self.session.mount("https://", adapter)
+        self.session.mount("http://", adapter)
+
+    def _safe_close_client(self):
+        if self.client is None:
+            return
+        try:
+            self.client.close_connection()
+        except Exception:
+            pass
+        finally:
+            self.client = None
+
+    def _ensure_client(self):
+        """Lazily create Binance SDK client without default ping."""
+        if self.client is not None:
+            return True
+
+        try:
+            # 注意：python-binance 用 requests_params 传 timeout，不是 timeout=10
+            self.client = Client(
+                requests_params={"timeout": 10},
+                ping=False,
+            )
+            return True
+        except Exception:
+            self.logger.exception("Failed to initialize Binance SDK Client")
+            self.client = None
+            return False
 
     def show_data(self, df, num_rows=5):
         logger = self.logger
@@ -182,7 +204,6 @@ class BinanceDataFetcher:
 
             return df
         except Exception:
-            # defensive: if any error occurs (including OSError from logging subsystem), log safely and return df unchanged
             try:
                 logger.exception("Failed to compute technical indicators; returning original df")
             except Exception:
@@ -192,29 +213,44 @@ class BinanceDataFetcher:
                     pass
             return df
 
-    # ==========================================
-    # 模块一：获取最新/实时的热数据 (通过 Python SDK)
-    # ==========================================
-    def fetch_recent_klines(self, symbol="BTCUSDT", interval="1m", limit=100):
-        """
-        获取当前时刻往前推的最新 K 线数据 (包含 buy_volume 和 sell_volume)
-        :param limit: 获取的数据条数（最高 2000 条）
-        """
-        logger = self.logger
-        logger.info(f"Fetching recent {limit} candles for {symbol} ({interval}) via SDK...")
+    def _fetch_recent_klines_via_sdk(self, symbol="BTCUSDT", interval="1m", limit=100):
+        if not self._ensure_client():
+            return None
 
         try:
-            # 使用 SDK 获取数据
-            raw_klines = self.client.get_klines(symbol=symbol.upper(), interval=interval, limit=limit)
-        except Exception as e:
-            logger.exception("Exception while calling Binance SDK get_klines")
+            return self.client.get_klines(
+                symbol=symbol.upper(),
+                interval=interval,
+                limit=limit,
+                requests_params={"timeout": 10},
+            )
+        except Exception:
+            self.logger.exception("Exception while calling Binance SDK get_klines")
+            self._safe_close_client()
             return None
 
+    def _fetch_recent_klines_via_rest(self, symbol="BTCUSDT", interval="1m", limit=100):
+        url = f"{self.base_url}/api/v3/klines"
+        params = {
+            "symbol": symbol.upper(),
+            "interval": interval,
+            "limit": limit,
+        }
+
+        try:
+            resp = self.session.get(url, params=params, timeout=(5, 15))
+            resp.raise_for_status()
+            return resp.json()
+        except Exception:
+            self.logger.exception("Exception while calling Binance REST /api/v3/klines")
+            return None
+
+    def _parse_klines_to_df(self, raw_klines):
+        logger = self.logger
         if not raw_klines:
-            logger.warning("No klines returned from SDK")
+            logger.warning("No klines returned")
             return None
 
-        # 支持 SDK 返回 list-of-lists (经典格式) 或 list-of-dicts (兼容其他客户端/REST库)
         columns = [
             'open_time', 'open', 'high', 'low', 'close', 'volume',
             'close_time', 'quote_asset_volume', 'number_of_trades',
@@ -229,7 +265,6 @@ class BinanceDataFetcher:
 
         try:
             if isinstance(first, dict):
-                # map common camelCase keys to our expected snake_case
                 df = pd.DataFrame(raw_klines)
                 mapping = {
                     'openTime': 'open_time',
@@ -248,14 +283,13 @@ class BinanceDataFetcher:
             else:
                 df = pd.DataFrame(raw_klines, columns=columns)
 
-            # 统一时间格式（SDK 返回的是毫秒）
             df['open_time'] = pd.to_datetime(df['open_time'], unit='ms')
             df['close_time'] = pd.to_datetime(df['close_time'], unit='ms')
-            # UTC 转换为北京时间 (UTC+8)
+
+            # 保持你原来的时区习惯：UTC -> UTC+8
             df['open_time'] = df['open_time'] + pd.Timedelta(hours=8)
             df['close_time'] = df['close_time'] + pd.Timedelta(hours=8)
 
-            # 转换数值类型（更安全的转换方式）
             numeric_columns = ['open', 'high', 'low', 'close', 'volume', 'taker_buy_base_asset_volume']
             for col in numeric_columns:
                 if col in df.columns:
@@ -263,18 +297,39 @@ class BinanceDataFetcher:
                 else:
                     df[col] = np.nan
 
-            # 计算买卖量（若缺失买量则置为 NaN）
             df['buy_volume'] = df.get('taker_buy_base_asset_volume')
             df['sell_volume'] = df['volume'] - df['buy_volume']
 
-            # 截取最终的 8 列（确保列存在）
             desired = ['open_time', 'open', 'high', 'low', 'close', 'volume', 'buy_volume', 'sell_volume']
             for c in desired:
                 if c not in df.columns:
                     df[c] = np.nan
 
-            df = df[desired]
-            return df
+            return df[desired]
         except Exception:
             logger.exception("Failed to parse klines into DataFrame")
             return None
+
+    # ==========================================
+    # 模块一：获取最新/实时的热数据
+    # 优先使用 SDK，失败后自动回退到 REST
+    # ==========================================
+    def fetch_recent_klines(self, symbol="BTCUSDT", interval="1m", limit=100):
+        logger = self.logger
+        logger.info(f"Fetching recent {limit} candles for {symbol} ({interval})...")
+
+        raw_klines = self._fetch_recent_klines_via_sdk(
+            symbol=symbol,
+            interval=interval,
+            limit=limit,
+        )
+
+        if raw_klines is None:
+            logger.warning("SDK failed, fallback to REST")
+            raw_klines = self._fetch_recent_klines_via_rest(
+                symbol=symbol,
+                interval=interval,
+                limit=limit,
+            )
+
+        return self._parse_klines_to_df(raw_klines)
