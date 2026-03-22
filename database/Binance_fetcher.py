@@ -9,6 +9,7 @@ Binance 数据获取工具 (Binance_fetcher.py)
 2. SDK 初始化改为懒加载，关闭默认 ping，并设置 timeout
 3. SDK 请求失败时，自动回退到 REST 直连
 4. 日志输出做防护，避免 handler 的 I/O 异常反过来导致程序中断
+5. Retry 参数兼容旧版 urllib3：优先 allowed_methods，失败则回退 method_whitelist
 =============================================================================
 """
 
@@ -26,7 +27,6 @@ from binance.client import Client
 
 
 def _get_safe_logger(name):
-    """Return a logger wrapper that never raises due to logging handler errors."""
     lg = logging.getLogger(name)
 
     class _SafeLogger:
@@ -98,6 +98,32 @@ def _wrap_provided_logger(logger):
     return _ProvidedSafeLogger(logger)
 
 
+def _build_retry():
+    """
+    Compatible with both old and new urllib3:
+    - urllib3 >= 1.26 uses allowed_methods
+    - older urllib3 uses method_whitelist
+    """
+    common_kwargs = dict(
+        total=3,
+        connect=3,
+        read=3,
+        backoff_factor=1,
+        status_forcelist=[429, 500, 502, 503, 504],
+    )
+
+    try:
+        return Retry(
+            allowed_methods=frozenset(["GET"]),
+            **common_kwargs
+        )
+    except TypeError:
+        return Retry(
+            method_whitelist=frozenset(["GET"]),
+            **common_kwargs
+        )
+
+
 class BinanceDataFetcher:
     def __init__(self, logger=None):
         base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -124,20 +150,12 @@ class BinanceDataFetcher:
             except Exception:
                 self.logger = _get_safe_logger(__name__)
 
-        # 不在 __init__ 中直接联网初始化，避免 AWS 上启动即失败
         self.client: Optional[Client] = None
 
-        # REST 备用通道：即使 SDK 初始化失败，也能直接拉公开市场数据
         self.base_url = "https://api.binance.com"
         self.session = requests.Session()
-        retry = Retry(
-            total=3,
-            connect=3,
-            read=3,
-            backoff_factor=1,
-            status_forcelist=[429, 500, 502, 503, 504],
-            allowed_methods=frozenset(["GET"]),
-        )
+
+        retry = _build_retry()
         adapter = HTTPAdapter(max_retries=retry)
         self.session.mount("https://", adapter)
         self.session.mount("http://", adapter)
@@ -153,12 +171,10 @@ class BinanceDataFetcher:
             self.client = None
 
     def _ensure_client(self):
-        """Lazily create Binance SDK client without default ping."""
         if self.client is not None:
             return True
 
         try:
-            # 注意：python-binance 用 requests_params 传 timeout，不是 timeout=10
             self.client = Client(
                 requests_params={"timeout": 10},
                 ping=False,
@@ -286,7 +302,6 @@ class BinanceDataFetcher:
             df['open_time'] = pd.to_datetime(df['open_time'], unit='ms')
             df['close_time'] = pd.to_datetime(df['close_time'], unit='ms')
 
-            # 保持你原来的时区习惯：UTC -> UTC+8
             df['open_time'] = df['open_time'] + pd.Timedelta(hours=8)
             df['close_time'] = df['close_time'] + pd.Timedelta(hours=8)
 
@@ -310,10 +325,6 @@ class BinanceDataFetcher:
             logger.exception("Failed to parse klines into DataFrame")
             return None
 
-    # ==========================================
-    # 模块一：获取最新/实时的热数据
-    # 优先使用 SDK，失败后自动回退到 REST
-    # ==========================================
     def fetch_recent_klines(self, symbol="BTCUSDT", interval="1m", limit=100):
         logger = self.logger
         logger.info(f"Fetching recent {limit} candles for {symbol} ({interval})...")
