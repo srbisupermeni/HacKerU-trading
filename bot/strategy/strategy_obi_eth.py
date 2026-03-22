@@ -124,6 +124,7 @@ class ObiDynamicStrategy:
         atr = tr.rolling(14).mean()
 
         latest = df.iloc[-1]
+        print(price, obi_slow.iloc[-1],obi_mom.iloc[-1],vol_ratio.iloc[-1],ema.iloc[-1],atr.iloc[-1])
         return {
             'timestamp': latest['open_time'],
             'price': float(latest['close']),
