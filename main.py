@@ -173,6 +173,10 @@ def main():
                             total_equity += qty * current_prices_15.get(coin, 0.0)
 
                         try:
+                            print("checkpoint1 Here!!!!!")
+                            print(sim_data_15m)
+                            print(total_equity)
+                            print("checkpoint1")
                             obi_strategy.on_tick(sim_data_15m, total_equity)
                         except Exception:
                             logging.getLogger(__name__).exception("failed to run obi_strategy")
