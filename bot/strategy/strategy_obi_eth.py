@@ -125,7 +125,7 @@ class ObiDynamicStrategy:
 
         latest = df.iloc[-1]
         print("checkpoint2")
-        print(price, obi_slow.iloc[-1],obi_mom.iloc[-1],vol_ratio.iloc[-1],ema.iloc[-1],atr.iloc[-1])
+        print(latest['close'], obi_slow.iloc[-1],obi_mom.iloc[-1],vol_ratio.iloc[-1],ema.iloc[-1],atr.iloc[-1])
         return {
             'timestamp': latest['open_time'],
             'price': float(latest['close']),
