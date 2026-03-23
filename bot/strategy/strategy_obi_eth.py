@@ -38,23 +38,23 @@ class ObiDynamicStrategy:
 
         # 🏆 最新优化的参数字典
         self.HP_ETH = {
-            'obi_slow_threshold': 0.197798,
-            'obi_momentum_threshold': 0.016294,
-            'vol_ratio_threshold': 1.7696,
-            'ema_period': 45,
-            'cooldown_bars': 6,
-            'atr_sl_multiplier': 2.696711,
-            'atr_tp_multiplier': 3.624748,
+            'obi_slow_threshold': 0.311348,
+            'obi_momentum_threshold': -0.01071,
+            'vol_ratio_threshold': 1.067881,
+            'ema_period': 43,
+            'cooldown_bars': 1,
+            'atr_sl_multiplier': 2.940215,
+            'atr_tp_multiplier': 3.165039,
         }
 
         self.HP_TAO = {
-            'obi_slow_threshold': 0.0457,
-            'obi_momentum_threshold': 0.0231,
-            'vol_ratio_threshold': 0.8988,
-            'ema_period': 12,
+            'obi_slow_threshold': 0.3557,
+            'obi_momentum_threshold': 0.019464,
+            'vol_ratio_threshold': 1.024522,
+            'ema_period': 53,
             'cooldown_bars': 5,
-            'atr_sl_multiplier': 2.910283,
-            'atr_tp_multiplier': 3.494203,
+            'atr_sl_multiplier': 2.58596,
+            'atr_tp_multiplier': 4.480203,
         }
 
         # 实盘状态管理变量
@@ -95,12 +95,14 @@ class ObiDynamicStrategy:
         if len(df_btc) < 100:
             return False
         close = df_btc['close']
-        ema20 = close.ewm(span=20, adjust=False).mean().iloc[-1]
-        vol_short = df_btc['volume'].rolling(12).mean().iloc[-1]
-        vol_long = df_btc['volume'].rolling(100).mean().iloc[-1]
-        ret = (close.iloc[-1] / close.iloc[-20] - 1) * 100
-        return sum([close.iloc[-1] > ema20, vol_short > vol_long * 0.85, ret > -5]) >= 2
-
+        
+        close_mean = df_btc['close'].rolling(20).mean().iloc[-1]
+        print('checkpoint:parameter')
+        print(close)
+        print(close_mean)
+        
+        
+        return close >= close_mean
     def compute_obi_indicators(self, df: pd.DataFrame, hp: dict):
         """核心指标计算（Pandas 矢量化近似形态法）"""
         if len(df) < 60:
